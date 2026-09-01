@@ -2,7 +2,12 @@ import {
   ChantierProject, ArtisanDirectoryItem, MarketProduct, MaintenanceTicket, UserProfile 
 } from '../types';
 
-export const INITIAL_USER_PROFILES: UserProfile[] = [
+// Guard mock/demo data so Production never exposes or depends on it.
+// Enable mocks in non-production or when explicitly requested with
+// ENABLE_MOCK_DATA=1 in the environment (useful for CI/dev demo builds).
+const ENABLE_MOCK_DATA = (process.env.NODE_ENV !== 'production') || process.env.ENABLE_MOCK_DATA === '1';
+
+const _INITIAL_USER_PROFILES: UserProfile[] = [
   {
     id: 'usr_1',
     name: 'Mohamed Ben Salem',
@@ -53,7 +58,9 @@ export const INITIAL_USER_PROFILES: UserProfile[] = [
   }
 ];
 
-export const INITIAL_PROJECTS: ChantierProject[] = [
+export const INITIAL_USER_PROFILES: UserProfile[] = ENABLE_MOCK_DATA ? _INITIAL_USER_PROFILES : [];
+
+const _INITIAL_PROJECTS: ChantierProject[] = [
   {
     id: 'proj_1',
     code: 'CHT-2026-001',
@@ -297,7 +304,9 @@ export const INITIAL_PROJECTS: ChantierProject[] = [
   }
 ];
 
-export const INITIAL_ARTISANS: ArtisanDirectoryItem[] = [
+export const INITIAL_PROJECTS: ChantierProject[] = ENABLE_MOCK_DATA ? _INITIAL_PROJECTS : [];
+
+const _INITIAL_ARTISANS: ArtisanDirectoryItem[] = [
   {
     id: 'art_1',
     name: 'Karim Trabelsi',
@@ -400,7 +409,11 @@ export const INITIAL_ARTISANS: ArtisanDirectoryItem[] = [
   }
 ];
 
-export const INITIAL_MARKETPLACE_PRODUCTS: MarketProduct[] = [
+export const INITIAL_ARTISANS: ArtisanDirectoryItem[] = ENABLE_MOCK_DATA ? _INITIAL_ARTISANS : [];
+
+
+
+const _INITIAL_MARKETPLACE_PRODUCTS: MarketProduct[] = [
   {
     id: 'prod_1',
     name: 'Plaque de Plâtre BA13 Standard 1.20x2.50m (3m²)',
@@ -538,7 +551,9 @@ export const INITIAL_MARKETPLACE_PRODUCTS: MarketProduct[] = [
   }
 ];
 
-export const INITIAL_MAINTENANCE_TICKETS: MaintenanceTicket[] = [
+export const INITIAL_MARKETPLACE_PRODUCTS: MarketProduct[] = ENABLE_MOCK_DATA ? _INITIAL_MARKETPLACE_PRODUCTS : [];
+
+const _INITIAL_MAINTENANCE_TICKETS: MaintenanceTicket[] = [
   {
     id: 'tkt_1',
     ticketCode: 'URG-2026-101',
@@ -592,3 +607,5 @@ export const INITIAL_MAINTENANCE_TICKETS: MaintenanceTicket[] = [
     createdAt: '2026-03-23 16:45'
   }
 ];
+
+export const INITIAL_MAINTENANCE_TICKETS: MaintenanceTicket[] = ENABLE_MOCK_DATA ? _INITIAL_MAINTENANCE_TICKETS : [];
