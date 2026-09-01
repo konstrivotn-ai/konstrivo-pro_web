@@ -52,6 +52,8 @@ export const RatesTab: React.FC<RatesTabProps> = ({
     return matchesSearch && matchesCategory;
   });
 
+  const isProd = !!((import.meta as any).env && (import.meta as any).env.PROD);
+
   const handleStartEdit = (rate: MaterialRate) => {
     setEditingId(rate.id);
     setTempPrice(rate.unitPriceTnd);
@@ -350,7 +352,14 @@ export const RatesTab: React.FC<RatesTabProps> = ({
               {filteredRates.length === 0 && (
                 <tr>
                   <td colSpan={6} className="p-8 text-center text-slate-500">
-                    Aucun matériau trouvé pour cette recherche.
+                    {isProd && rates.length === 0 ? (
+                      <div className="space-y-2">
+                        <div className="text-base font-bold text-amber-300">لا توجد أسعار سوق متزامنة بعد.</div>
+                        <div className="text-sm text-slate-400">اتصل بالإنترنت لتحديث أسعار السوق.</div>
+                      </div>
+                    ) : (
+                      <div>Aucun matériau trouvé pour cette recherche.</div>
+                    )}
                   </td>
                 </tr>
               )}

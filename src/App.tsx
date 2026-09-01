@@ -29,7 +29,7 @@ import {
   MarketProduct, MaintenanceTicket, UserProfile
 } from './types';
 import { DEFAULT_MARKET_RATES } from './data/marketRates';
-import { restoreSession, logout, listDevis, createDevis, updateDevis, deleteDevis } from './lib/api';
+import { restoreSession, logout, listDevis, createDevis, updateDevis, deleteDevis, listPrices } from './lib/api';
 import { COUNTRIES_CONFIG } from './data/countryConfig';
 import { 
   INITIAL_PROJECTS, INITIAL_ARTISANS, INITIAL_MARKETPLACE_PRODUCTS, 
@@ -109,11 +109,16 @@ export default function App() {
   });
 
   // Load custom rates or default rates
+  // Production: do NOT treat DEFAULT_MARKET_RATES as real market prices.
+  // - If cache exists, restore it.
+  // - In production with no cache, initialize empty to indicate "no synchronized prices yet".
   const [rates, setRates] = useState<MaterialRate[]>(() => {
     const saved = localStorage.getItem('konstrivo_rates_2026');
     if (saved) {
       try { return JSON.parse(saved); } catch (e) {}
     }
+    // In production we must not fall back to the dev DEFAULT_MARKET_RATES
+    if ((import.meta as any).env && (import.meta as any).env.PROD) return [];
     return DEFAULT_MARKET_RATES;
   });
 
@@ -169,6 +174,98 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('konstrivo_rates_2026', JSON.stringify(rates));
   }, [rates]);
+
+  // Sync market prices from backend when online.
+  // Selection rules:
+  // - Consider entries with `isCurrent === true` OR whose effectiveFrom/effectiveTo cover now.
+  // - If multiple candidates for the same materialId, pick the one with the latest `updatedAt`,
+  //   then highest `version` as tiebreaker.
+  // - In production, do not synthesize prices from DEFAULT_MARKET_RATES when no cache exists.
+  useEffect(() => {
+    let active = true;
+    if (isOffline) return;
+    (async () => {
+      try {
+        const res = await listPrices({ market: country.toLowerCase(), limit: 1000 });
+        const serverPrices = (res && (res as any).data) || [];
+        if (!active) return;
+
+        const now = Date.now();
+        // group by materialId
+        const byMaterial = new Map<string, any[]>();
+        for (const p of serverPrices) {
+          if (!p || !p.materialId) continue;
+          const arr = byMaterial.get(p.materialId) || [];
+          arr.push(p);
+          byMaterial.set(p.materialId, arr);
+        }
+
+        const priceMap = new Map<string, number>();
+        for (const [materialId, entries] of byMaterial.entries()) {
+          const candidates = entries.filter((p: any) => {
+            if (p.isCurrent) return true;
+            try {
+              const from = p.effectiveFrom ? Date.parse(p.effectiveFrom) : NaN;
+              const to = p.effectiveTo ? Date.parse(p.effectiveTo) : NaN;
+              if (!isNaN(from) && (isNaN(to) || now <= to) && now >= from) return true;
+            } catch (e) {}
+            return false;
+          });
+          if (candidates.length === 0) continue;
+          candidates.sort((a: any, b: any) => {
+            const ta = a.updatedAt ? Date.parse(a.updatedAt) : (a.createdAt ? Date.parse(a.createdAt) : 0);
+            const tb = b.updatedAt ? Date.parse(b.updatedAt) : (b.createdAt ? Date.parse(b.createdAt) : 0);
+            if (ta !== tb) return tb - ta; // newest first
+            const va = typeof a.version === 'number' ? a.version : parseInt(a.version || '0', 10) || 0;
+            const vb = typeof b.version === 'number' ? b.version : parseInt(b.version || '0', 10) || 0;
+            return vb - va; // highest version first
+          });
+          const chosen = candidates[0];
+          if (chosen && typeof chosen.price === 'number') priceMap.set(materialId, chosen.price);
+        }
+
+        // Merge: update existing rates by material id; if production and no cache and no server prices,
+        // leave rates empty to indicate "no synchronized prices yet".
+        setRates(prev => {
+          // If we have no previous rates and running in production and no server prices, remain empty.
+          if (((import.meta as any).env && (import.meta as any).env.PROD) && (!localStorage.getItem('konstrivo_rates_2026')) && priceMap.size === 0) {
+            return [];
+          }
+          // Map existing rates by id for update; if a rate doesn't exist locally but server returned it,
+          // we will append a minimal entry so materialId linkage is preserved.
+          const prevById = new Map(prev.map(r => [r.id, r]));
+          const updated: MaterialRate[] = [];
+          // update local entries
+          for (const r of prev) {
+            if (priceMap.has(r.id)) {
+              updated.push({ ...r, unitPriceTnd: priceMap.get(r.id)! });
+            } else {
+              updated.push(r);
+            }
+          }
+          // append any server-only prices as lightweight entries (preserve materialId link)
+          for (const [materialId, price] of priceMap.entries()) {
+            if (!prevById.has(materialId)) {
+              updated.push({
+                id: materialId,
+                category: 'placo',
+                nameFr: 'Server price',
+                nameAr: '',
+                nameDerja: '',
+                unit: 'unit',
+                unitPriceTnd: price,
+                defaultPriceTnd: price
+              });
+            }
+          }
+          return updated;
+        });
+      } catch (err) {
+        // silent: keep local cache
+      }
+    })();
+    return () => { active = false; };
+  }, [isOffline, country]);
 
   useEffect(() => {
     localStorage.setItem('konstrivo_devis_history', JSON.stringify(devisHistory));

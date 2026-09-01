@@ -47,6 +47,8 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
   const currentCountry = COUNTRIES_CONFIG[country] || COUNTRIES_CONFIG.TN;
   const currMeta = CURRENCY_SYMBOLS[currency] || { symbol: currency, decimals: 2 };
 
+  const isProd = !!((import.meta as any).env && (import.meta as any).env.PROD);
+
   const [selectedTrade, setSelectedTrade] = useState<TradeCategory>('placo');
   const [copiedSuccess, setCopiedSuccess] = useState(false);
   const [addedSuccess, setAddedSuccess] = useState(false);
@@ -362,6 +364,8 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
     return auditCalculationResult(calculationResult, country);
   }, [calculationResult, country]);
 
+  const showNoMarketPricesBanner = isProd && rates.length === 0;
+
   const handleDownloadAuditPdf = () => {
     const html = generateAuditPdfHtml(calculationResult, auditResult, currMeta.symbol);
     const win = window.open('', '_blank');
@@ -587,6 +591,11 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
         </div>
 
       </div>
+      {showNoMarketPricesBanner && (
+        <div className="p-4 rounded-2xl border border-amber-500/20 bg-amber-950/20 text-amber-300 text-sm font-bold">
+          لا توجد أسعار سوق متزامنة بعد. اتصل بالإنترنت لتحديث أسعار السوق.
+        </div>
+      )}
 
       {/* Main Grid: Inputs (Left) & Output Results (Right) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">

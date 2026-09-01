@@ -210,6 +210,19 @@ export async function listDevis(opts?: { page?: number; limit?: number; status?:
   return await res.json().catch(() => ({ data: [], page: 1, limit: 20, total: 0 }));
 }
 
+// ---------------- Prices API ---------------------------------------------
+export async function listPrices(opts?: { materialId?: string; market?: string; currency?: string; limit?: number }) {
+  const q = new URLSearchParams();
+  if (opts?.materialId) q.set('materialId', opts.materialId);
+  if (opts?.market) q.set('market', opts.market);
+  if (opts?.currency) q.set('currency', opts.currency);
+  if (opts?.limit) q.set('limit', String(opts.limit));
+  const url = `${BASE}/prices${q.toString() ? '?' + q.toString() : ''}`;
+  const res = await apiFetch(url, { method: 'GET' });
+  if (!res.ok) throw new Error('Failed to list prices');
+  return await res.json().catch(() => ({ data: [], page: 1, limit: 20, total: 0 }));
+}
+
 export async function createDevis(body: any, idempotencyKey?: string) {
   const headers: Record<string, string> = {};
   if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
