@@ -7,6 +7,7 @@
 import http from 'http';
 import express from 'express';
 import { applyCors } from '../server/middleware/cors';
+import { applySecurityHeaders } from '../server/middleware/securityHeaders';
 import { setupV1Router } from '../server/routes/v1';
 import { authenticate } from '../server/middleware/auth';
 import { createAiEstimatorHandler } from '../server';
@@ -88,6 +89,8 @@ export async function startTestServer(opts?: { enableRateLimits?: boolean, testL
   }
 
   const app = express();
+  // Apply security headers (dev/test relaxed for tooling)
+  applySecurityHeaders(app);
   // Apply CORS in test apps too (reflect origin in non-production)
   applyCors(app);
   app.use(express.json({ limit: '10mb' }));

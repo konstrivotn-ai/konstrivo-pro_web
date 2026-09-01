@@ -73,6 +73,7 @@ async function main() {
   const { runAiTests } = await import('./ai.test');
   const { runRateLimitTests } = await import('./rate_limit.test');
   const { runCorsTests } = await import('./cors.test');
+  const { runSecurityHeadersTests } = await import('./security_headers.test');
 
   await runBootstrapTests();
   await runAuthTests();
@@ -83,6 +84,7 @@ async function main() {
   await runDirectoryTests();
   await runRateLimitTests();
   await runCorsTests();
+  await runSecurityHeadersTests();
   await runAiTests();
 
   console.log('\n═══════════════════════════════════════════');

@@ -7,6 +7,7 @@ import { bootstrapAdmin } from "./server/bootstrap";
 import { authenticate } from './server/middleware/auth';
 import { createLimiter } from './server/middleware/rateLimit';
 import { applyCors } from './server/middleware/cors';
+import { applySecurityHeaders } from './server/middleware/securityHeaders';
 import type { DevisDocument } from './src/types';
 
 // Exportable factory: create an AI estimator handler that accepts an optional aiClient.
@@ -102,6 +103,9 @@ async function startServer() {
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   // ── Phase 2 API: /api/v1 (mounted BEFORE Vite/SPA middleware) ──────────
+  // Apply security headers first
+  applySecurityHeaders(app);
+
   // Apply CORS before any routes
   applyCors(app);
 
