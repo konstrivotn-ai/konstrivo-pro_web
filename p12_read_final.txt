@@ -1,0 +1,105 @@
+﻿===== App.tsx 206..216 =====
+  }, [maintenanceTickets]);
+
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem('konstrivo_user_profile', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('konstrivo_user_profile');
+    }
+  }, [currentUser]);
+
+  // Expose global state for Flutter / React Native mobile sync & REST mock
+
+===== AuthModal 114..180 ===== 
+
+  const handleQuickDemo = (roleType: UserRole) => {
+    if (roleType === 'admin') {
+      // Admin login must go through the real backend API
+      setAuthError('L\'administrateur doit se connecter via le formulaire avec ses identifiants backend.');
+      return;
+    }
+
+    const demoProfiles: Partial<Record<UserRole, UserProfile>> = {
+      artisan: {
+        id: 'demo_artisan_2026',
+        email: 'mohamed.placo@konstrivo.tn',
+        fullName: 'Mohamed Trabelsi',
+        role: 'artisan',
+        phone: '+216 98 440 210',
+        company: 'Placo & DÃ©co Carthage Pro',
+        region: 'Grand Tunis (Ariana)',
+        isVerified: true,
+        createdAt: '2026-01-10',
+        taxNumber: '1482930/B/P/000'
+      },
+      particulier: {
+        id: 'demo_particulier_2026',
+        email: 'karim.benali@gmail.com',
+        fullName: 'Karim Ben Ali',
+        role: 'particulier',
+        phone: '+216 55 889 900',
+        company: 'PropriÃ©taire Villa Ennasr',
+        region: 'Grand Tunis',
+        isVerified: true,
+        createdAt: '2026-02-01'
+      },
+      fournisseur: {
+        id: 'demo_fournisseur_2026',
+        email: 'contact@quincaillerie-moderne.tn',
+        fullName: 'Quincaillerie & MatÃ©riaux du Centre',
+        role: 'fournisseur',
+        phone: '+216 71 880 900',
+        company: 'Comptoir National Placo & BTP',
+        region: 'Sfax & Sahel',
+        isVerified: true,
+        createdAt: '2025-11-20',
+        taxNumber: '0983721/M/N/000'
+      },
+      ingenieur: {
+        id: 'demo_ingenieur_2026',
+        email: 'ing.yassine@bureau-etudes.tn',
+        fullName: 'Ing. Yassine Mansour',
+        role: 'ingenieur',
+        phone: '+216 22 334 455',
+        company: 'BET Structures & Acoustique DTU',
+        region: 'Sousse / Monastir',
+        isVerified: true,
+        createdAt: '2025-10-15',
+        taxNumber: '1120934/C/A/000'
+      }
+    };
+
+    onLogin(demoProfiles[roleType]!);
+    setSuccessMsg(`ConnectÃ© en tant que ${demoProfiles[roleType]!.fullName}`);
+    setTimeout(() => {
+      setSuccessMsg('');
+      onClose();
+    }, 500);
+  };
+
+  const isUserAdmin = currentUser?.role === 'admin';
+
+===== AdminDashboard 79..100 =====
+interface AdminDashboardModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  currentUser: UserProfile | null;
+  onLogin: (user: UserProfile) => void;
+  onLogout: () => void;
+  devisHistory: DevisDocument[];
+  artisans: ArtisanDirectoryItem[];
+  onUpdateArtisans: (artisans: ArtisanDirectoryItem[]) => void;
+  rates: MaterialRate[];
+  onBulkUpdateRates: (rates: MaterialRate[]) => void;
+  lang: Language;
+  country: CountryCode;
+  currency: CurrencyCode;
+}
+
+export const TUNISIAN_GOVERNORATES_LIST = [
+  'Tunis Grand', 'Ariana', 'Ben Arous', 'Manouba',
+  'Nabeul / Cap Bon', 'Bizerte', 'Sousse / Sahel', 'Monastir',
+  'Mahdia', 'Sfax', 'Kairouan', 'GabÃ¨s', 'MÃ©denine / Djerba',
+  'BÃ©ja', 'Jendouba', 'Le Kef', 'Siliana', 'Kasserine',
+  'Sidi Bouzid', 'Gafsa', 'Tozeur', 'Kebili', 'Tataouine', 'Zaghouan'

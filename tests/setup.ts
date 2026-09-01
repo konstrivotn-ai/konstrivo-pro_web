@@ -1,0 +1,135 @@
+/**
+ * Phase 2 — Test Infrastructure
+ *
+ * Starts the Express app on an ephemeral port and exposes
+ * helpers for making authenticated API requests.
+ */
+import http from 'http';
+import express from 'express';
+import { setupV1Router } from '../server/routes/v1';
+import { getDatabase } from '../server/db/client';
+import { isSafeDevelopmentDatabase } from '../server/config';
+
+export interface TestServer {
+  port: number;
+  baseUrl: string;
+  close: () => Promise<void>;
+}
+
+/**
+ * Clean PostgreSQL tables before running tests to ensure test isolation.
+ * Only identity/transactional tables are truncated — the catalog
+ * (materials/prices) is served from MemoryStore in tests and seeded
+ * independently, so it must NOT be wiped here.
+ */
+async function cleanupDatabase() {
+  // Ensure we do NOT run destructive cleanup against non-test/production DBs.
+  const db = await getDatabase();
+  if (!db) return;
+
+  const explicitConfirm = process.env.TEST_DB_CONFIRM === '1' || process.env.TEST_DB_CONFIRM === 'true';
+  if (!explicitConfirm) {
+    // Require an explicit confirmation environment variable before allowing
+    // any destructive cleanup, regardless of whether the DB appears local.
+    throw new Error('[KONSTRIVO-TEST] Aborting destructive cleanup: TEST_DB_CONFIRM must be set to 1 to allow TRUNCATE/cleanup (DANGEROUS).');
+  }
+
+  try {
+    const { sql } = await import('drizzle-orm');
+    // All table names verified against server/db/schema/*.
+    await db.execute(sql.raw(
+      'TRUNCATE TABLE idempotency_keys, sync_operations, supplier_catalog_items, ' +
+      'supplier_catalog_imports, artisan_profiles, devis_items, devis, ' +
+      'subscriptions, company_members, companies, users CASCADE'
+    ));
+  } catch (err) {
+    console.warn('[KONSTRIVO-TEST] Database cleanup failed/skipped:', err instanceof Error ? err.message : err);
+  }
+}
+
+export async function startTestServer(): Promise<TestServer> {
+  // Clean database before starting tests
+  await cleanupDatabase();
+  
+  const app = express();
+  app.use(express.json({ limit: '10mb' }));
+  const v1Router = setupV1Router();
+  app.use('/api/v1', v1Router);
+
+  // Simple health for testing
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok' });
+  });
+
+  return new Promise((resolve) => {
+    const server = app.listen(0, '127.0.0.1', () => {
+      const addr = server.address() as { port: number };
+      resolve({
+        port: addr.port,
+        baseUrl: `http://127.0.0.1:${addr.port}`,
+        close: () => new Promise<void>((res2) => server.close(() => res2())),
+      });
+    });
+  });
+}
+
+export interface ApiResponse<T = any> {
+  status: number;
+  body: T;
+  headers: Record<string, string>;
+}
+
+export async function apiRequest(
+  baseUrl: string,
+  method: string,
+  path: string,
+  options?: {
+    body?: any;
+    token?: string;
+    idempotencyKey?: string;
+    rawBody?: Buffer | string;
+    contentType?: string;
+  }
+): Promise<ApiResponse> {
+  return new Promise((resolve, reject) => {
+    const url = `${baseUrl}${path}`;
+    const parsedUrl = new URL(url);
+    const isRaw = !!options?.rawBody;
+
+    const req = http.request(
+      {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port,
+        path: parsedUrl.pathname + parsedUrl.search,
+        method,
+        headers: {
+          ...(isRaw && options?.contentType ? { 'Content-Type': options.contentType } : {}),
+          ...(!isRaw && options?.body ? { 'Content-Type': 'application/json' } : {}),
+          ...(options?.token ? { Authorization: `Bearer ${options.token}` } : {}),
+          ...(options?.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => {
+          let body: any = data;
+          try {
+            if (data.length > 0) body = JSON.parse(data);
+          } catch { /* keep as string */ }
+          resolve({ status: res.statusCode || 0, body, headers: res.headers as Record<string, string> });
+        });
+      }
+    );
+
+    req.on('error', reject);
+
+    if (options?.rawBody) {
+      req.end(options.rawBody);
+    } else if (options?.body !== undefined) {
+      req.end(JSON.stringify(options.body));
+    } else {
+      req.end();
+    }
+  });
+}

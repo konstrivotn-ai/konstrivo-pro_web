@@ -1,0 +1,642 @@
+﻿import React, { useState, useEffect } from 'react';
+import { Header } from './components/Header';
+import { BottomNavBar } from './components/BottomNavBar';
+import { HomeTab } from './components/HomeTab';
+import { CalculatorTab } from './components/CalculatorTab';
+import { ProjectsTab } from './components/ProjectsTab';
+import { DirectoryMarketplaceTab } from './components/DirectoryMarketplaceTab';
+import { MaintenanceTab } from './components/MaintenanceTab';
+import { RatesTab } from './components/RatesTab';
+import { DevisTab } from './components/DevisTab';
+import { KnowledgeTab } from './components/KnowledgeTab';
+import { AboutTab } from './components/AboutTab';
+import { ContactTab } from './components/ContactTab';
+import { AiAssistantTab } from './components/AiAssistantTab';
+import { SettingsTab } from './components/SettingsTab';
+import { ServicesTab } from './components/ServicesTab';
+import { FloatingAiWidget } from './components/FloatingAiWidget';
+import { ApiSyncModal } from './components/ApiSyncModal';
+import { AuthModal } from './components/AuthModal';
+import { CatalogUploadModal } from './components/CatalogUploadModal';
+import { VisualDevisWizardModal } from './components/VisualDevisWizardModal';
+import { SupplierDashboardModal } from './components/SupplierDashboardModal';
+import { LivePriceIndexWidget } from './components/LivePriceIndexWidget';
+import { AdminDashboardModal } from './components/AdminDashboardModal';
+
+import { 
+  Language, RegionTunisia, MaterialRate, DevisDocument, DevisItem,
+  CountryCode, CurrencyCode, UnitSystem, ChantierProject, ArtisanDirectoryItem,
+  MarketProduct, MaintenanceTicket, UserProfile
+} from './types';
+import { DEFAULT_MARKET_RATES } from './data/marketRates';
+import { restoreSession, logout } from './lib/api';
+import { COUNTRIES_CONFIG } from './data/countryConfig';
+import { 
+  INITIAL_PROJECTS, INITIAL_ARTISANS, INITIAL_MARKETPLACE_PRODUCTS, 
+  INITIAL_MAINTENANCE_TICKETS 
+} from './data/mockSaaSData';
+
+// Declare global window property for Mobile Sync integration
+declare global {
+  interface Window {
+    KonstrivoState?: any;
+  }
+}
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState<string>('home');
+  const [lang, setLang] = useState<Language>('derja');
+  const [region, setRegion] = useState<RegionTunisia>('Tunis Grand');
+  const [wasteMarginDefault, setWasteMarginDefault] = useState<number>(10);
+
+  // Global Localization States
+  const [country, setCountry] = useState<CountryCode>(() => {
+    return (localStorage.getItem('konstrivo_country') as CountryCode) || 'TN';
+  });
+
+  const [currency, setCurrency] = useState<CurrencyCode>(() => {
+    return (localStorage.getItem('konstrivo_currency') as CurrencyCode) || 'TND';
+  });
+
+  const [unitSystem, setUnitSystem] = useState<UnitSystem>(() => {
+    return (localStorage.getItem('konstrivo_unit_system') as UnitSystem) || 'metric';
+  });
+
+  const [isOffline, setIsOffline] = useState<boolean>(false);
+  const [showSyncModal, setShowSyncModal] = useState<boolean>(false);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [showCatalogModal, setShowCatalogModal] = useState<boolean>(false);
+  const [showWizardModal, setShowWizardModal] = useState<boolean>(false);
+  const [showSupplierModal, setShowSupplierModal] = useState<boolean>(false);
+  const [showAdminModal, setShowAdminModal] = useState<boolean>(false);
+
+  // User Profile State — initialized empty; hydrated securely from the server
+  // session via restoreSession() (HttpOnly refresh cookie). The profile is
+  // NEVER persisted to localStorage (no konstrivo_user_profile key).
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+
+  // SaaS Data Collections
+  const [projects, setProjects] = useState<ChantierProject[]>(() => {
+    const saved = localStorage.getItem('konstrivo_projects');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return INITIAL_PROJECTS;
+  });
+
+  const [artisans, setArtisans] = useState<ArtisanDirectoryItem[]>(() => {
+    const saved = localStorage.getItem('konstrivo_artisans');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return INITIAL_ARTISANS;
+  });
+
+  const [marketplaceProducts, setMarketplaceProducts] = useState<MarketProduct[]>(() => {
+    const saved = localStorage.getItem('konstrivo_marketplace');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return INITIAL_MARKETPLACE_PRODUCTS;
+  });
+
+  const [maintenanceTickets, setMaintenanceTickets] = useState<MaintenanceTicket[]>(() => {
+    const saved = localStorage.getItem('konstrivo_maintenance_tickets');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return INITIAL_MAINTENANCE_TICKETS;
+  });
+
+  // Load custom rates or default rates
+  const [rates, setRates] = useState<MaterialRate[]>(() => {
+    const saved = localStorage.getItem('konstrivo_rates_2026');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return DEFAULT_MARKET_RATES;
+  });
+
+  // Active Devis
+  const [currentDevis, setCurrentDevis] = useState<DevisDocument>(() => {
+    const countryCfg = COUNTRIES_CONFIG['TN'];
+    return {
+      id: `dev-${Date.now()}`,
+      reference: `DEV-2026-${Math.floor(1000 + Math.random() * 9000)}`,
+      date: new Date().toLocaleDateString('fr-TN'),
+      clientName: '',
+      clientPhone: '',
+      clientAddress: '',
+      projectTitle: '',
+      region: 'Tunis Grand',
+      country: 'TN',
+      currency: 'TND',
+      items: [],
+      subtotalMaterialsTnd: 0,
+      subtotalLaborTnd: 0,
+      discountTnd: 0,
+      tvaPercent: countryCfg.defaultVatRate,
+      timbreFiscalTnd: countryCfg.timbreFiscalDefault,
+      retenueGarantiePercent: 0,
+      totalTnd: 0,
+      notes: 'Devis valable 30 jours. Conditions: 50% acompte à la commande, solde à la livraison.',
+      status: 'brouillon'
+    };
+  });
+
+  // Devis History
+  const [devisHistory, setDevisHistory] = useState<DevisDocument[]>(() => {
+    const saved = localStorage.getItem('konstrivo_devis_history');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return [];
+  });
+
+  // Save persistent configs
+  useEffect(() => {
+    localStorage.setItem('konstrivo_country', country);
+  }, [country]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_currency', currency);
+  }, [currency]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_unit_system', unitSystem);
+  }, [unitSystem]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_rates_2026', JSON.stringify(rates));
+  }, [rates]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_devis_history', JSON.stringify(devisHistory));
+  }, [devisHistory]);
+
+  // Save SaaS modules
+  useEffect(() => {
+    localStorage.setItem('konstrivo_projects', JSON.stringify(projects));
+  }, [projects]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_artisans', JSON.stringify(artisans));
+  }, [artisans]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_marketplace', JSON.stringify(marketplaceProducts));
+  }, [marketplaceProducts]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_maintenance_tickets', JSON.stringify(maintenanceTickets));
+  }, [maintenanceTickets]);
+
+  // Restore the authenticated session on first mount using the HttpOnly
+  // refresh cookie (server-validated via /users/me). The profile is never
+  // persisted client-side — no konstrivo_user_profile localStorage key.
+  useEffect(() => {
+    let active = true;
+    restoreSession()
+      .then(profile => {
+        if (active) setCurrentUser(profile);
+      })
+      .catch(() => {
+        if (active) setCurrentUser(null);
+      });
+    return () => { active = false; };
+  }, []);
+
+  // Real logout: calls the backend /auth/logout endpoint and clears the
+  // in-memory access token held by the API client, then drops the profile.
+  const handleLogout = async () => {
+    await logout();
+    setCurrentUser(null);
+  };
+
+  // Defend the Admin dashboard client-side: only an authenticated admin
+  // (currentUser?.role === 'admin') may open the Admin dashboard modal.
+  // Allow opening the Admin modal so an unauthenticated admin can log in
+  // The AdminDashboardModal itself gates privileged UI based on
+  // `currentUser?.role === 'admin'` and shows a login form when needed.
+  const openAdminModal = () => {
+    setShowAdminModal(true);
+  };
+
+  // Expose global state for Flutter / React Native mobile sync & REST mock
+  useEffect(() => {
+    window.KonstrivoState = {
+      version: '2026.5.0',
+      user: currentUser,
+      country,
+      currency,
+      unitSystem,
+      isOffline,
+      lang,
+      region,
+      currentDevis,
+      devisHistory,
+      projects,
+      artisans,
+      marketplaceProducts,
+      maintenanceTickets,
+      ratesCount: rates.length,
+      activeTab
+    };
+  }, [currentUser, country, currency, unitSystem, isOffline, lang, region, currentDevis, devisHistory, projects, artisans, marketplaceProducts, maintenanceTickets, rates, activeTab]);
+
+  const handleUpdateRate = (id: string, newPrice: number) => {
+    setRates(prev => prev.map(r => r.id === id ? { ...r, unitPriceTnd: newPrice } : r));
+  };
+
+  const handleBulkUpdateRates = (updatedRates: MaterialRate[]) => {
+    setRates(updatedRates);
+  };
+
+  const handleResetRates = () => {
+    setRates(DEFAULT_MARKET_RATES);
+    localStorage.removeItem('konstrivo_rates_2026');
+  };
+
+  const handleAddToDevis = (item: DevisItem) => {
+    setCurrentDevis(prev => ({
+      ...prev,
+      items: [...prev.items, item]
+    }));
+  };
+
+  const handleAddMultipleToDevis = (items: DevisItem[]) => {
+    setCurrentDevis(prev => ({
+      ...prev,
+      items: [...prev.items, ...items]
+    }));
+  };
+
+  const handleSaveDevisHistory = (devisToSave: DevisDocument) => {
+    setDevisHistory(prev => {
+      const existsIndex = prev.findIndex(d => d.id === devisToSave.id);
+      if (existsIndex >= 0) {
+        const copy = [...prev];
+        copy[existsIndex] = devisToSave;
+        return copy;
+      }
+      return [devisToSave, ...prev];
+    });
+  };
+
+  const handleLoadFromHistory = (dh: DevisDocument) => {
+    setCurrentDevis(dh);
+    setActiveTab('devis');
+  };
+
+  const handleDeleteFromHistory = (id: string) => {
+    setDevisHistory(prev => prev.filter(d => d.id !== id));
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-amber-500 selection:text-slate-950">
+      
+      {/* Top Universal Sticky Main Navigation Bar */}
+      <Header
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        lang={lang}
+        setLang={setLang}
+        region={region}
+        setRegion={setRegion}
+        country={country}
+        setCountry={setCountry}
+        currency={currency}
+        setCurrency={setCurrency}
+        unitSystem={unitSystem}
+        setUnitSystem={setUnitSystem}
+        devisCount={currentDevis.items.length}
+        onOpenSyncModal={() => setShowSyncModal(true)}
+        onOpenAuthModal={() => setShowAuthModal(true)}
+                onOpenAdminModal={openAdminModal}
+        onOpenWizardModal={() => setShowWizardModal(true)}
+        onOpenSupplierModal={() => setShowSupplierModal(true)}
+        currentUser={currentUser}
+        isOffline={isOffline}
+      />
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 pb-24">
+        
+        {/* 🏠 Accueil (Home) */}
+        {activeTab === 'home' && (
+          <HomeTab
+            onNavigate={(t) => setActiveTab(t)}
+            lang={lang}
+            country={country}
+            currency={currency}
+            onOpenAuth={() => setShowAuthModal(true)}
+          />
+        )}
+
+        {/* 🧮 Calculateur & Outils */}
+        {activeTab === 'calculator' && (
+          <CalculatorTab
+            rates={rates}
+            lang={lang}
+            country={country}
+            currency={currency}
+            unitSystem={unitSystem}
+            onAddToDevis={handleAddToDevis}
+            onAddMultipleToDevis={handleAddMultipleToDevis}
+            wasteMarginDefault={wasteMarginDefault}
+          />
+        )}
+
+        {/* 🏗️ Projets & Chantiers */}
+        {activeTab === 'projects' && (
+          <ProjectsTab
+            projects={projects}
+            onUpdateProjects={setProjects}
+            lang={lang}
+            country={country}
+            currency={currency}
+          />
+        )}
+
+        {/* 👷 Professionnels & Marché */}
+        {activeTab === 'directory_market' && (
+          <DirectoryMarketplaceTab
+            artisans={artisans}
+            products={marketplaceProducts}
+            lang={lang}
+            country={country}
+            currency={currency}
+          />
+        )}
+
+        {/* 🛠️ Services & Dépannage */}
+        {activeTab === 'services' && (
+          <ServicesTab
+            onNavigate={(t) => setActiveTab(t)}
+            lang={lang}
+          />
+        )}
+
+        {activeTab === 'maintenance' && (
+          <MaintenanceTab
+            tickets={maintenanceTickets}
+            onUpdateTickets={setMaintenanceTickets}
+            lang={lang}
+            country={country}
+            currency={currency}
+          />
+        )}
+
+        {/* 🏷️ Tarifs Marché */}
+        {activeTab === 'rates' && (
+          <div className="space-y-6">
+            <LivePriceIndexWidget
+              lang={lang}
+              country={country}
+              currency={currency}
+              onOpenSupplierDashboard={() => setShowSupplierModal(true)}
+            />
+
+            <RatesTab
+              rates={rates}
+              onUpdateRate={handleUpdateRate}
+              onBulkUpdateRates={handleBulkUpdateRates}
+              onResetRates={handleResetRates}
+              onOpenCatalogUpload={() => setShowSupplierModal(true)}
+              lang={lang}
+              country={country}
+              currency={currency}
+            />
+          </div>
+        )}
+
+        {/* 📄 Devis & Factures */}
+        {activeTab === 'devis' && (
+          <DevisTab
+            devis={currentDevis}
+            setDevis={setCurrentDevis}
+            devisHistory={devisHistory}
+            onSaveDevisHistory={handleSaveDevisHistory}
+            onLoadFromHistory={handleLoadFromHistory}
+            onDeleteFromHistory={handleDeleteFromHistory}
+            lang={lang}
+            region={region}
+            country={country}
+            currency={currency}
+            unitSystem={unitSystem}
+          />
+        )}
+
+        {/* ℹ️ À Propos */}
+        {activeTab === 'about' && (
+          <AboutTab
+            lang={lang}
+            onNavigate={(t) => setActiveTab(t)}
+          />
+        )}
+
+        {/* 📞 Contact & Support */}
+        {activeTab === 'contact' && (
+          <ContactTab lang={lang} />
+        )}
+
+        {/* 📚 Guide DTU */}
+        {activeTab === 'knowledge' && (
+          <KnowledgeTab lang={lang} />
+        )}
+
+        {/* 🤖 Assistant AI */}
+        {activeTab === 'assistant' && (
+          <AiAssistantTab
+            currentDevis={currentDevis}
+            region={region}
+            lang={lang}
+          />
+        )}
+
+        {/* ⚙️ Réglages */}
+        {activeTab === 'settings' && (
+          <SettingsTab
+            lang={lang}
+            setLang={setLang}
+            region={region}
+            setRegion={setRegion}
+            country={country}
+            setCountry={setCountry}
+            currency={currency}
+            setCurrency={setCurrency}
+            unitSystem={unitSystem}
+            setUnitSystem={setUnitSystem}
+            wasteMarginDefault={wasteMarginDefault}
+            setWasteMarginDefault={setWasteMarginDefault}
+            onResetRates={handleResetRates}
+            isOffline={isOffline}
+            setIsOffline={setIsOffline}
+            onOpenSyncModal={() => setShowSyncModal(true)}
+          />
+        )}
+      </main>
+
+      {/* Sync API Modal */}
+      {showSyncModal && (
+        <ApiSyncModal
+          isOpen={showSyncModal}
+          onClose={() => setShowSyncModal(false)}
+          currentDevis={currentDevis}
+          rates={rates}
+          devisHistory={devisHistory}
+          country={country}
+          currency={currency}
+          unitSystem={unitSystem}
+        />
+      )}
+
+      {/* User Login / Register Modal */}
+      {showAuthModal && (
+        <AuthModal
+          isOpen={showAuthModal}
+          onClose={() => setShowAuthModal(false)}
+                    currentUser={currentUser}
+          onLogin={(usr) => setCurrentUser(usr)}
+          onLogout={handleLogout}
+          lang={lang}
+          onOpenAdminModal={openAdminModal}
+        />
+      )}
+
+      {/* Supplier Catalog File Upload Modal */}
+      {showCatalogModal && (
+        <CatalogUploadModal
+          isOpen={showCatalogModal}
+          onClose={() => setShowCatalogModal(false)}
+          rates={rates}
+          onApplyCatalog={handleBulkUpdateRates}
+          lang={lang}
+        />
+      )}
+
+      {/* Supplier Wholesaler Dashboard Modal */}
+      {showSupplierModal && (
+        <SupplierDashboardModal
+          isOpen={showSupplierModal}
+          onClose={() => setShowSupplierModal(false)}
+          rates={rates}
+          onApplyCatalog={handleBulkUpdateRates}
+          lang={lang}
+          country={country}
+          currency={currency}
+        />
+      )}
+
+      {/* Visual Multi-Step Request Wizard Modal */}
+      {showWizardModal && (
+        <VisualDevisWizardModal
+          isOpen={showWizardModal}
+          onClose={() => setShowWizardModal(false)}
+          lang={lang}
+          country={country}
+          currency={currency}
+          userRegion={region}
+        />
+      )}
+
+      {/* Admin Dashboard Control Panel Modal */}
+      {showAdminModal && (
+        <AdminDashboardModal
+          isOpen={showAdminModal}
+          onClose={() => setShowAdminModal(false)}
+                    currentUser={currentUser}
+          onLogin={(usr) => setCurrentUser(usr)}
+          onLogout={handleLogout}
+          devisHistory={devisHistory}
+          artisans={artisans}
+          onUpdateArtisans={setArtisans}
+          rates={rates}
+          onBulkUpdateRates={handleBulkUpdateRates}
+          lang={lang}
+          country={country}
+          currency={currency}
+        />
+      )}
+
+      {/* Persistent Footer (Desktop) */}
+      <footer className="bg-slate-900 border-t border-slate-800/80 py-8 text-xs text-slate-400 print:hidden mb-14 md:mb-0">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 space-y-6">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-6">
+            
+            <div className="space-y-2">
+              <span className="font-mono font-black text-amber-400 text-sm block">KONSTRIVO BTP</span>
+              <p className="text-slate-400 text-[11px] leading-relaxed">
+                Plateforme SaaS leader en estimation de métré, devis conformes aux DTU et gestion de chantiers en Tunisie et à l'international.
+              </p>
+            </div>
+
+            <div>
+              <span className="font-bold text-white text-xs block mb-2">Navigation Rapide</span>
+              <ul className="space-y-1 text-[11px]">
+                <li><button onClick={() => setActiveTab('home')} className="hover:text-amber-400">Accueil</button></li>
+                <li><button onClick={() => setActiveTab('calculator')} className="hover:text-amber-400">Calculateur Métré</button></li>
+                <li><button onClick={() => setActiveTab('maintenance')} className="hover:text-amber-400">Dépannage Express</button></li>
+                <li><button onClick={() => setActiveTab('rates')} className="hover:text-amber-400">Tarifs Matériaux 2026</button></li>
+              </ul>
+            </div>
+
+            <div>
+              <span className="font-bold text-white text-xs block mb-2">Espace Entreprise</span>
+              <ul className="space-y-1 text-[11px]">
+                <li><button onClick={() => setActiveTab('projects')} className="hover:text-amber-400">Gestion de Chantiers</button></li>
+                <li><button onClick={() => setActiveTab('directory_market')} className="hover:text-amber-400">Annuaire des Artisans</button></li>
+                <li><button onClick={() => setShowCatalogModal(true)} className="hover:text-amber-400">Import Barème Fournisseur</button></li>
+                <li><button onClick={() => setActiveTab('about')} className="hover:text-amber-400">Normes DTU & Mentions Légales</button></li>
+                <li>
+                                    <button 
+                    onClick={openAdminModal} 
+                    className="text-amber-400/80 hover:text-amber-300 font-mono text-[11px] font-bold flex items-center gap-1 mt-1 cursor-pointer"
+                  >
+                    🛡️ Espace Administration
+                  </button>
+                </li>
+              </ul>
+            </div>
+
+            <div className="space-y-2">
+              <span className="font-bold text-white text-xs block">Contact & Support</span>
+              <p className="text-[11px] text-slate-400">
+                Centre Urbain Nord, Tunis<br />
+                WhatsApp Direct : +216 98 440 210<br />
+                Email : konstrivo.tn@gmail.com
+              </p>
+              <button
+                onClick={() => setShowAuthModal(true)}
+                className="mt-2 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg text-[11px] font-bold transition-all"
+              >
+                {currentUser ? 'Mon Compte Pro' : 'Connexion / Inscription'}
+              </button>
+            </div>
+
+          </div>
+
+          <div className="pt-4 border-t border-slate-800/80 flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] text-slate-500">
+            <span>© 2026 KONSTRIVO Technologies. Tous droits réservés. Conformité DTU 25.41 & Code Général des Impôts.</span>
+            <span>Édition 2026.5.0 • Barèmes actualisés en temps réel</span>
+          </div>
+        </div>
+      </footer>
+
+      {/* Mobile Bottom Navigation Bar */}
+      <BottomNavBar
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        lang={lang}
+        devisCount={currentDevis.items.length}
+      />
+
+      {/* Floating AI Assistant Widget (Access KONSTRIVO AI from any screen) */}
+      <FloatingAiWidget
+        onOpenFullAssistant={() => setActiveTab('assistant')}
+        lang={lang}
+        region={region}
+        currentDevis={currentDevis}
+      />
+    </div>
+  );
+}

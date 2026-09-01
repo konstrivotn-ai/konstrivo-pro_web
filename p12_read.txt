@@ -1,0 +1,719 @@
+
+===== src/App.tsx =====
+--- lines 72..95 ---
+  // User Profile State
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(() => {
+    const saved = localStorage.getItem('konstrivo_user_profile');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return {
+      id: 'demo_artisan_2026',
+      email: 'mohamed.placo@konstrivo.tn',
+      fullName: 'Mohamed Trabelsi',
+      role: 'artisan',
+      phone: '+216 98 440 210',
+      company: 'Placo & Déco Carthage Pro',
+      region: 'Grand Tunis',
+      isVerified: true,
+      createdAt: '2026-01-10',
+      taxNumber: '1482930/B/P/000'
+    };
+  });
+
+  // SaaS Data Collections
+  const [projects, setProjects] = useState<ChantierProject[]>(() => {
+    const saved = localStorage.getItem('konstrivo_projects');
+    if (saved) {
+--- lines 96..160 ---
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return INITIAL_PROJECTS;
+  });
+
+  const [artisans, setArtisans] = useState<ArtisanDirectoryItem[]>(() => {
+    const saved = localStorage.getItem('konstrivo_artisans');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return INITIAL_ARTISANS;
+  });
+
+  const [marketplaceProducts, setMarketplaceProducts] = useState<MarketProduct[]>(() => {
+    const saved = localStorage.getItem('konstrivo_marketplace');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return INITIAL_MARKETPLACE_PRODUCTS;
+  });
+
+  const [maintenanceTickets, setMaintenanceTickets] = useState<MaintenanceTicket[]>(() => {
+    const saved = localStorage.getItem('konstrivo_maintenance_tickets');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return INITIAL_MAINTENANCE_TICKETS;
+  });
+
+  // Load custom rates or default rates
+  const [rates, setRates] = useState<MaterialRate[]>(() => {
+    const saved = localStorage.getItem('konstrivo_rates_2026');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return DEFAULT_MARKET_RATES;
+  });
+
+  // Active Devis
+  const [currentDevis, setCurrentDevis] = useState<DevisDocument>(() => {
+    const countryCfg = COUNTRIES_CONFIG['TN'];
+    return {
+      id: `dev-${Date.now()}`,
+      reference: `DEV-2026-${Math.floor(1000 + Math.random() * 9000)}`,
+      date: new Date().toLocaleDateString('fr-TN'),
+      clientName: '',
+      clientPhone: '',
+      clientAddress: '',
+      projectTitle: '',
+      region: 'Tunis Grand',
+      country: 'TN',
+      currency: 'TND',
+      items: [],
+      subtotalMaterialsTnd: 0,
+      subtotalLaborTnd: 0,
+      discountTnd: 0,
+      tvaPercent: countryCfg.defaultVatRate,
+      timbreFiscalTnd: countryCfg.timbreFiscalDefault,
+      retenueGarantiePercent: 0,
+      totalTnd: 0,
+      notes: 'Devis valable 30 jours. Conditions: 50% acompte à la commande, solde à la livraison.',
+      status: 'brouillon'
+    };
+  });
+
+--- lines 161..300 ---
+  // Devis History
+  const [devisHistory, setDevisHistory] = useState<DevisDocument[]>(() => {
+    const saved = localStorage.getItem('konstrivo_devis_history');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) {}
+    }
+    return [];
+  });
+
+  // Save persistent configs
+  useEffect(() => {
+    localStorage.setItem('konstrivo_country', country);
+  }, [country]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_currency', currency);
+  }, [currency]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_unit_system', unitSystem);
+  }, [unitSystem]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_rates_2026', JSON.stringify(rates));
+  }, [rates]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_devis_history', JSON.stringify(devisHistory));
+  }, [devisHistory]);
+
+  // Save SaaS modules
+  useEffect(() => {
+    localStorage.setItem('konstrivo_projects', JSON.stringify(projects));
+  }, [projects]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_artisans', JSON.stringify(artisans));
+  }, [artisans]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_marketplace', JSON.stringify(marketplaceProducts));
+  }, [marketplaceProducts]);
+
+  useEffect(() => {
+    localStorage.setItem('konstrivo_maintenance_tickets', JSON.stringify(maintenanceTickets));
+  }, [maintenanceTickets]);
+
+  useEffect(() => {
+    if (currentUser) {
+      localStorage.setItem('konstrivo_user_profile', JSON.stringify(currentUser));
+    } else {
+      localStorage.removeItem('konstrivo_user_profile');
+    }
+  }, [currentUser]);
+
+  // Expose global state for Flutter / React Native mobile sync & REST mock
+  useEffect(() => {
+    window.KonstrivoState = {
+      version: '2026.5.0',
+      user: currentUser,
+      country,
+      currency,
+      unitSystem,
+      isOffline,
+      lang,
+      region,
+      currentDevis,
+      devisHistory,
+      projects,
+      artisans,
+      marketplaceProducts,
+      maintenanceTickets,
+      ratesCount: rates.length,
+      activeTab
+    };
+  }, [currentUser, country, currency, unitSystem, isOffline, lang, region, currentDevis, devisHistory, projects, artisans, marketplaceProducts, maintenanceTickets, rates, activeTab]);
+
+  const handleUpdateRate = (id: string, newPrice: number) => {
+    setRates(prev => prev.map(r => r.id === id ? { ...r, unitPriceTnd: newPrice } : r));
+  };
+
+  const handleBulkUpdateRates = (updatedRates: MaterialRate[]) => {
+    setRates(updatedRates);
+  };
+
+  const handleResetRates = () => {
+    setRates(DEFAULT_MARKET_RATES);
+    localStorage.removeItem('konstrivo_rates_2026');
+  };
+
+  const handleAddToDevis = (item: DevisItem) => {
+    setCurrentDevis(prev => ({
+      ...prev,
+      items: [...prev.items, item]
+    }));
+  };
+
+  const handleAddMultipleToDevis = (items: DevisItem[]) => {
+    setCurrentDevis(prev => ({
+      ...prev,
+      items: [...prev.items, ...items]
+    }));
+  };
+
+  const handleSaveDevisHistory = (devisToSave: DevisDocument) => {
+    setDevisHistory(prev => {
+      const existsIndex = prev.findIndex(d => d.id === devisToSave.id);
+      if (existsIndex >= 0) {
+        const copy = [...prev];
+        copy[existsIndex] = devisToSave;
+        return copy;
+      }
+      return [devisToSave, ...prev];
+    });
+  };
+
+  const handleLoadFromHistory = (dh: DevisDocument) => {
+    setCurrentDevis(dh);
+    setActiveTab('devis');
+  };
+
+  const handleDeleteFromHistory = (id: string) => {
+    setDevisHistory(prev => prev.filter(d => d.id !== id));
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-amber-500 selection:text-slate-950">
+      
+      {/* Top Universal Sticky Main Navigation Bar */}
+      <Header
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+        lang={lang}
+        setLang={setLang}
+        region={region}
+        setRegion={setRegion}
+        country={country}
+        setCountry={setCountry}
+        currency={currency}
+        setCurrency={setCurrency}
+--- lines 300..315 ---
+        setCurrency={setCurrency}
+        unitSystem={unitSystem}
+        setUnitSystem={setUnitSystem}
+        devisCount={currentDevis.items.length}
+        onOpenSyncModal={() => setShowSyncModal(true)}
+        onOpenAuthModal={() => setShowAuthModal(true)}
+        onOpenAdminModal={() => setShowAdminModal(true)}
+        onOpenWizardModal={() => setShowWizardModal(true)}
+        onOpenSupplierModal={() => setShowSupplierModal(true)}
+        currentUser={currentUser}
+        isOffline={isOffline}
+      />
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 pb-24">
+        
+        {/* 🏠 Accueil (Home) */}
+--- lines 488..545 ---
+          onClose={() => setShowAuthModal(false)}
+          currentUser={currentUser}
+          onLogin={(usr) => setCurrentUser(usr)}
+          onLogout={() => setCurrentUser(null)}
+          lang={lang}
+          onOpenAdminModal={() => setShowAdminModal(true)}
+        />
+      )}
+
+      {/* Supplier Catalog File Upload Modal */}
+      {showCatalogModal && (
+        <CatalogUploadModal
+          isOpen={showCatalogModal}
+          onClose={() => setShowCatalogModal(false)}
+          rates={rates}
+          onApplyCatalog={handleBulkUpdateRates}
+          lang={lang}
+        />
+      )}
+
+      {/* Supplier Wholesaler Dashboard Modal */}
+      {showSupplierModal && (
+        <SupplierDashboardModal
+          isOpen={showSupplierModal}
+          onClose={() => setShowSupplierModal(false)}
+          rates={rates}
+          onApplyCatalog={handleBulkUpdateRates}
+          lang={lang}
+          country={country}
+          currency={currency}
+        />
+      )}
+
+      {/* Visual Multi-Step Request Wizard Modal */}
+      {showWizardModal && (
+        <VisualDevisWizardModal
+          isOpen={showWizardModal}
+          onClose={() => setShowWizardModal(false)}
+          lang={lang}
+          country={country}
+          currency={currency}
+          userRegion={region}
+        />
+      )}
+
+      {/* Admin Dashboard Control Panel Modal */}
+      {showAdminModal && (
+        <AdminDashboardModal
+          isOpen={showAdminModal}
+          onClose={() => setShowAdminModal(false)}
+          currentUser={currentUser}
+          onLogin={(usr) => setCurrentUser(usr)}
+          onLogout={() => setCurrentUser(null)}
+          devisHistory={devisHistory}
+          artisans={artisans}
+          onUpdateArtisans={setArtisans}
+          rates={rates}
+          onBulkUpdateRates={handleBulkUpdateRates}
+--- lines 573..606 ---
+
+            <div>
+              <span className="font-bold text-white text-xs block mb-2">Espace Entreprise</span>
+              <ul className="space-y-1 text-[11px]">
+                <li><button onClick={() => setActiveTab('projects')} className="hover:text-amber-400">Gestion de Chantiers</button></li>
+                <li><button onClick={() => setActiveTab('directory_market')} className="hover:text-amber-400">Annuaire des Artisans</button></li>
+                <li><button onClick={() => setShowCatalogModal(true)} className="hover:text-amber-400">Import Barème Fournisseur</button></li>
+                <li><button onClick={() => setActiveTab('about')} className="hover:text-amber-400">Normes DTU & Mentions Légales</button></li>
+                <li>
+                  <button 
+                    onClick={() => setShowAdminModal(true)} 
+                    className="text-amber-400/80 hover:text-amber-300 font-mono text-[11px] font-bold flex items-center gap-1 mt-1 cursor-pointer"
+                  >
+                    🛡️ Espace Administration
+                  </button>
+                </li>
+              </ul>
+            </div>
+
+            <div className="space-y-2">
+              <span className="font-bold text-white text-xs block">Contact & Support</span>
+              <p className="text-[11px] text-slate-400">
+                Centre Urbain Nord, Tunis<br />
+                WhatsApp Direct : +216 98 440 210<br />
+                Email : konstrivo.tn@gmail.com
+              </p>
+              <button
+                onClick={() => setShowAuthModal(true)}
+                className="mt-2 px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg text-[11px] font-bold transition-all"
+              >
+                {currentUser ? 'Mon Compte Pro' : 'Connexion / Inscription'}
+              </button>
+            </div>
+
+
+===== src/components/AuthModal.tsx =====
+--- lines 110..135 ---
+        setAuthError(err?.message || "Échec de l'inscription. Veuillez réessayer.");
+      }
+    }
+  };
+
+  const handleQuickDemo = (roleType: UserRole) => {
+    if (roleType === 'admin') {
+      // Admin login must go through the real backend API
+      setAuthError('L\'administrateur doit se connecter via le formulaire avec ses identifiants backend.');
+      return;
+    }
+
+    const demoProfiles: Partial<Record<UserRole, UserProfile>> = {
+      artisan: {
+        id: 'demo_artisan_2026',
+        email: 'mohamed.placo@konstrivo.tn',
+        fullName: 'Mohamed Trabelsi',
+        role: 'artisan',
+        phone: '+216 98 440 210',
+        company: 'Placo & Déco Carthage Pro',
+        region: 'Grand Tunis (Ariana)',
+        isVerified: true,
+        createdAt: '2026-01-10',
+        taxNumber: '1482930/B/P/000'
+      },
+      particulier: {
+--- lines 135..270 ---
+      particulier: {
+        id: 'demo_particulier_2026',
+        email: 'karim.benali@gmail.com',
+        fullName: 'Karim Ben Ali',
+        role: 'particulier',
+        phone: '+216 55 889 900',
+        company: 'Propriétaire Villa Ennasr',
+        region: 'Grand Tunis',
+        isVerified: true,
+        createdAt: '2026-02-01'
+      },
+      fournisseur: {
+        id: 'demo_fournisseur_2026',
+        email: 'contact@quincaillerie-moderne.tn',
+        fullName: 'Quincaillerie & Matériaux du Centre',
+        role: 'fournisseur',
+        phone: '+216 71 880 900',
+        company: 'Comptoir National Placo & BTP',
+        region: 'Sfax & Sahel',
+        isVerified: true,
+        createdAt: '2025-11-20',
+        taxNumber: '0983721/M/N/000'
+      },
+      ingenieur: {
+        id: 'demo_ingenieur_2026',
+        email: 'ing.yassine@bureau-etudes.tn',
+        fullName: 'Ing. Yassine Mansour',
+        role: 'ingenieur',
+        phone: '+216 22 334 455',
+        company: 'BET Structures & Acoustique DTU',
+        region: 'Sousse / Monastir',
+        isVerified: true,
+        createdAt: '2025-10-15',
+        taxNumber: '1120934/C/A/000'
+      }
+    };
+
+    onLogin(demoProfiles[roleType]!);
+    setSuccessMsg(`Connecté en tant que ${demoProfiles[roleType]!.fullName}`);
+    setTimeout(() => {
+      setSuccessMsg('');
+      onClose();
+    }, 500);
+  };
+
+  const isUserAdmin = currentUser?.role === 'admin';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
+      <div className="relative w-full max-w-2xl bg-[#0b0f17] border border-slate-800 rounded-2xl shadow-2xl overflow-hidden my-8">
+        
+        {/* Modal Header */}
+        <div className="bg-gradient-to-r from-slate-950 via-slate-900 to-amber-950/40 p-5 border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400">
+              <Shield className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                {isUserAdmin ? 'Espace Administration Général' : currentUser ? 'Espace Professionnel KONSTRIVO' : (mode === 'login' ? 'Connexion Espace BTP' : 'Créer un Compte Professionnel')}
+                <span className="px-2 py-0.5 text-[10px] font-black uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-full font-mono">
+                  Édition 2026
+                </span>
+              </h3>
+              <p className="text-xs text-slate-400">
+                {isUserAdmin ? 'Accès au panneau propriétaire et gestion globale' : 'Accédez aux calculs métrés, gestion chantiers, tarifs synchronisés et devis certifiés'}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-2 text-slate-400 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg transition-all cursor-pointer"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Modal Body */}
+        <div className="p-6 space-y-6">
+          {successMsg && (
+            <div className="p-4 bg-emerald-950/60 border border-emerald-500/50 rounded-xl flex items-center gap-3 text-emerald-300">
+              <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-emerald-400" />
+              <span className="text-sm font-semibold">{successMsg}</span>
+            </div>
+          )}
+
+          {authError && (
+            <div className="p-4 bg-red-950/60 border border-red-500/50 rounded-xl flex items-center gap-3 text-red-300">
+              <Lock className="w-5 h-5 flex-shrink-0 text-red-400" />
+              <span className="text-sm font-semibold">{authError}</span>
+            </div>
+          )}
+
+          {currentUser ? (
+            isUserAdmin ? (
+              /* ADMIN OWNER SPECIFIC VIEW (SEPARATED FROM ARTISAN PROFILE) */
+              <div className="space-y-6">
+                <div className="p-6 bg-gradient-to-br from-slate-950 via-slate-900 to-amber-950/40 border border-amber-500/40 rounded-2xl space-y-4">
+                  <div className="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
+                    <div className="flex items-center gap-4">
+                      <div className="w-14 h-14 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-black text-2xl shadow-lg shadow-amber-500/20 shrink-0">
+                        🛡️
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h4 className="text-lg font-black text-white">{currentUser.fullName}</h4>
+                          <span className="px-2.5 py-0.5 text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-full font-mono flex items-center gap-1">
+                            <ShieldCheck className="w-3 h-3" /> Owner Admin
+                          </span>
+                        </div>
+                        <p className="text-xs text-amber-400 font-semibold mt-0.5">
+                          Compte Administrateur Propriétaire • {currentUser.email}
+                        </p>
+                        <p className="text-xs text-slate-400 mt-1">
+                          Vous êtes connecté en tant qu'administrateur principal de la plateforme KONSTRIVO BTP.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 flex flex-col sm:flex-row items-center gap-3">
+                    <button
+                      onClick={() => {
+                        onClose();
+                        if (onOpenAdminModal) onOpenAdminModal();
+                      }}
+                      className="w-full sm:flex-1 py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black rounded-xl shadow-lg shadow-amber-500/20 transition-all cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>Ouvrir l'Espace Administration Général</span>
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        onLogout();
+                        setSuccessMsg('Déconnexion Administrateur effectuée');
+--- lines 540..592 ---
+                </button>
+              </form>
+
+              {/* Demo 1-Click Login Shortcuts */}
+              <div className="mt-6 pt-5 border-t border-slate-800">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block mb-2 text-center">
+                  ⚡ Accès Rapides Démo (Types de Compte)
+                </span>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDemo('artisan')}
+                    className="p-2 bg-slate-950 hover:bg-slate-800 border border-amber-500/30 hover:border-amber-400 rounded-lg text-xs font-semibold text-amber-400 text-center transition-all cursor-pointer"
+                  >
+                    👷 Artisan Placo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDemo('fournisseur')}
+                    className="p-2 bg-slate-950 hover:bg-slate-800 border border-emerald-500/30 hover:border-emerald-400 rounded-lg text-xs font-semibold text-emerald-400 text-center transition-all cursor-pointer"
+                  >
+                    🏪 Quincaillerie
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDemo('ingenieur')}
+                    className="p-2 bg-slate-950 hover:bg-slate-800 border border-purple-500/30 hover:border-purple-400 rounded-lg text-xs font-semibold text-purple-400 text-center transition-all cursor-pointer"
+                  >
+                    📐 Ingénieur DTU
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDemo('particulier')}
+                    className="p-2 bg-slate-950 hover:bg-slate-800 border border-blue-500/30 hover:border-blue-400 rounded-lg text-xs font-semibold text-blue-400 text-center transition-all cursor-pointer"
+                  >
+                    🏠 Client
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickDemo('admin')}
+                    className="p-2 bg-slate-950 hover:bg-slate-800 border border-amber-500/50 hover:border-amber-400 rounded-lg text-xs font-bold text-amber-300 text-center transition-all cursor-pointer col-span-2 sm:col-span-1 flex items-center justify-center gap-1"
+                  >
+                    <Shield className="w-3 h-3 text-amber-400" />
+                    <span>Admin</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+===== src/components/Header.tsx =====
+--- lines 240..255 ---
+              )}
+            </button>
+
+            {/* S'inscrire / Admin Dashboard Button (Solid Gold) */}
+            <button
+              onClick={isUserAdmin ? (onOpenAdminModal || onOpenAuthModal) : onOpenAuthModal}
+              className="px-4 py-2 rounded-xl text-xs sm:text-sm font-bold text-slate-950 bg-gradient-to-r from-amber-400 via-amber-500 to-amber-500 hover:from-amber-300 hover:to-amber-400 shadow-lg shadow-amber-500/20 transition-all cursor-pointer transform hover:-translate-y-0.5 flex items-center gap-1.5"
+            >
+              {isUserAdmin ? '🛡️ Owner Panel' : currentUser ? 'Mon Compte' : "S'inscrire"}
+            </button>
+          </div>
+
+          {/* Mobile Menu Hamburger */}
+          <div className="flex sm:hidden items-center gap-2">
+            <button
+              onClick={() => setShowSearchModal(true)}
+
+===== src/components/AdminDashboardModal.tsx =====
+--- lines 1..50 ---
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  X, ShieldCheck, ShieldAlert, Lock, UserCheck, Users, FileText, 
+  TrendingUp, DollarSign, Search, Filter, CheckCircle2, Trash2, 
+  PlusCircle, Edit3, RefreshCw, KeyRound, Sparkles, Building2, Phone, Star, AlertCircle, LogOut,
+  BarChart3, PieChart, ArrowRight, Eye, Calendar, MapPin, HardHat, ExternalLink,
+  Coins, Percent, Receipt, Plus, Calculator, Settings,
+  Upload, FileSpreadsheet, Download, ListChecks, CheckSquare, Square, Award, Check
+} from 'lucide-react';
+import { ArtisanDirectoryItem, MaterialRate, DevisDocument, Language, CountryCode, CurrencyCode, TradeCategory, UserProfile } from '../types';
+import { CURRENCY_SYMBOLS, formatPrice } from '../data/countryConfig';
+import { login } from '../lib/api';
+
+export interface ProFeatureItem {
+  id: string;
+  title: string;
+  description: string;
+  enabled: boolean;
+  category: 'visibility' | 'tools' | 'support' | 'badge';
+}
+
+export const DEFAULT_PRO_FEATURES: ProFeatureItem[] = [
+  {
+    id: 'pf_1',
+    title: 'Badge Vérifié & Certifié CS8 BTP 2026',
+    description: 'Affichez le macaron Or de confiance auprès des clients sur toute la Tunisie.',
+    enabled: true,
+    category: 'badge'
+  },
+  {
+    id: 'pf_2',
+    title: 'Devis PDF Illimités & Envoi Direct WhatsApp',
+    description: 'Générez des devis professionnels aux couleurs de votre entreprise sans aucune limite.',
+    enabled: true,
+    category: 'tools'
+  },
+  {
+    id: 'pf_3',
+    title: 'Mise en Relation Directe Client (0% Intermédiaire)',
+    description: 'Recevez directement les demandes de devis sur votre gouvernorat par téléphone et WhatsApp.',
+    enabled: true,
+    category: 'visibility'
+  },
+  {
+    id: 'pf_4',
+    title: 'Assistant IA Devising BTP 24/7 (Pro Derja AI)',
+    description: 'Calculs automatiques de matériaux et métrés complexes (Plafonds, Cloisons, Carrelage, Peinture).',
+    enabled: true,
+    category: 'tools'
+  },
+--- lines 480..560 ---
+    }
+  };
+
+  // Sample CSV Download Template
+  const handleDownloadCsvSample = () => {
+    const sampleCsvContent = 
+`Nom_Materiau;Categorie;Unite;Prix_TND_HT;Note_Technique;Nom_Arabe
+Plaque BA13 Standard 3m2;placo;unit;30;Plaque plâtre NF 1.2x2.5m;بلاك با13 عادي
+Plaque BA13 Hydrofuge Vert;placo;unit;46;Plaque hydrofuge pièces humides;بلاك با13 مائي
+Laine de Roche 50mm 7.2m2;isolation;boite;90;Isolation thermique et phonique;صوف صخري 50مم
+Enduit de Joint 25kg;peinture;sac;42;Séchage rapide pour calicot;معجون فاصل 25كغ
+Carreau Grès Cérame 60x60;carrelage;m²;38;Antidérapant R11 grand passage;زليج غرانيت 60*60
+Tube PEX Sanitaire 20mm;plomberie;ml;3.5;Gainé rouge/bleu 50m;أنبوب صحي 20مم`;
+
+    const blob = new Blob([sampleCsvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'modele_catalogue_konstrivo_btp.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Pro Features Toggle Active Handler
+  const handleToggleProFeature = (featureId: string) => {
+    const updated = proFeatures.map(f => f.id === featureId ? { ...f, enabled: !f.enabled } : f);
+    setProFeatures(updated);
+    localStorage.setItem('konstrivo_pro_features', JSON.stringify(updated));
+  };
+
+  // Delete Pro Feature Handler
+  const handleDeleteProFeature = (featureId: string, title: string) => {
+    if (window.confirm(`Êtes-vous sûr de vouloir supprimer l'avantage "${title}" de l'offre Pro ?`)) {
+      const updated = proFeatures.filter(f => f.id !== featureId);
+      setProFeatures(updated);
+      localStorage.setItem('konstrivo_pro_features', JSON.stringify(updated));
+      setNotification(`✓ Avantage "${title}" retiré du Plan Pro.`);
+      setTimeout(() => setNotification(null), 3000);
+    }
+  };
+
+  // Update Pro Feature Field
+  const handleUpdateProFeature = (featureId: string, field: 'title' | 'description' | 'category', value: string) => {
+    const updated = proFeatures.map(f => f.id === featureId ? { ...f, [field]: value } : f);
+    setProFeatures(updated);
+    localStorage.setItem('konstrivo_pro_features', JSON.stringify(updated));
+  };
+
+  // Add New Pro Feature
+  const handleCreateProFeature = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newProFeature.title.trim() || !newProFeature.description.trim()) {
+      alert('Veuillez fournir un titre et une description pour la nouvelle fonctionnalité Pro.');
+      return;
+    }
+
+    const created: ProFeatureItem = {
+      id: `pf_${Date.now()}`,
+      title: sanitizeInput(newProFeature.title.trim()),
+      description: sanitizeInput(newProFeature.description.trim()),
+      enabled: true,
+      category: newProFeature.category
+    };
+
+    const updated = [...proFeatures, created];
+    setProFeatures(updated);
+    localStorage.setItem('konstrivo_pro_features', JSON.stringify(updated));
+
+    setNotification(`✓ Nouvelle fonctionnalité Pro "${created.title}" ajoutée à l'Offre Plan Pro !`);
+    setNewProFeature({ title: '', description: '', category: 'tools' });
+    setShowAddProFeatureForm(false);
+    setTimeout(() => setNotification(null), 3500);
+  };
+
+  // Save All Pro Features
+  const handleSaveProFeatures = () => {
+    localStorage.setItem('konstrivo_pro_features', JSON.stringify(proFeatures));
+    setNotification('✓ Tous les avantages et la grille de l\'Offre Plan Pro 2026 ont été enregistrés avec succès !');
+    setTimeout(() => setNotification(null), 3500);

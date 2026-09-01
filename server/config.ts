@@ -1,0 +1,89 @@
+/**
+ * Phase 2 + Phase 3 — Environment Configuration
+ *
+ * Reads configuration from environment variables.
+ * Safe defaults are provided so the application never crashes
+ * during local frontend development when no database is configured.
+ */
+import 'dotenv/config';
+
+export interface ServerConfig {
+  port: number;
+  nodeEnv: string;
+  isProduction: boolean;
+  // JWT
+  jwtSecret: string;
+  jwtExpiresInSeconds: number;
+  jwtRefreshExpiresInSeconds: number;
+  // Password hashing
+  scryptSaltLen: number;
+  scryptKeyLen: number;
+  scryptN: number;
+  // File upload
+  maxUploadBytes: number;
+  allowedUploadMime: Set<string>;
+  // Database (Phase 3)
+  databaseUrl: string | undefined;
+  // Rate limiting (basic)
+  rateLimitMax: number;
+  rateLimitWindowMs: number;
+}
+
+const ONE_DAY_SECONDS = 86400;
+
+export function loadConfig(): ServerConfig {
+  const jwtSecret = process.env.JWT_SECRET || 'dev-only-insecure-secret-change-me';
+  if (process.env.NODE_ENV === 'production') {
+    if (!process.env.JWT_SECRET || jwtSecret === 'dev-only-insecure-secret-change-me') {
+      // Fail CLOSED in production: an unconfigured or known JWT secret would
+      // allow anyone to forge tokens. Auth-foundation safety guard (Phase 0).
+      throw new Error(
+        '[KONSTRIVO] FATAL: JWT_SECRET is not configured in production. ' +
+        'Refusing to start with an insecure token secret.'
+      );
+    }
+  } else if (!process.env.JWT_SECRET) {
+    console.warn('[KONSTRIVO] WARNING: JWT_SECRET not set — using insecure dev default. NEVER use in production.');
+  }
+
+  const databaseUrl = process.env.DATABASE_URL || undefined;
+  if (databaseUrl && process.env.NODE_ENV === 'development') {
+    console.log('[KONSTRIVO] DATABASE_URL detected — PostgreSQL mode enabled.');
+  }
+
+  return {
+    port: parseInt(process.env.PORT || '3000', 10),
+    nodeEnv: process.env.NODE_ENV || 'development',
+    isProduction: process.env.NODE_ENV === 'production',
+    jwtSecret,
+    jwtExpiresInSeconds: parseInt(process.env.JWT_EXPIRES_IN || '3600', 10), // 1 hour
+    jwtRefreshExpiresInSeconds: parseInt(process.env.JWT_REFRESH_EXPIRES_IN || String(ONE_DAY_SECONDS * 7), 10), // 7 days
+    scryptSaltLen: 16,
+    scryptKeyLen: 32,
+    scryptN: 16384,
+    maxUploadBytes: parseInt(process.env.MAX_UPLOAD_BYTES || String(5 * 1024 * 1024), 10), // 5 MB
+    allowedUploadMime: new Set(['text/csv', 'application/csv', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']),
+    databaseUrl,
+    rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
+    rateLimitWindowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
+  };
+}
+
+export const config: ServerConfig = loadConfig();
+
+export function hasDatabase(): boolean {
+  return !!config.databaseUrl;
+}
+
+/**
+ * Returns true only when we are in an environment we can confidently
+ * identify as a development database.
+ * This guards against accidentally connecting to production.
+ */
+export function isSafeDevelopmentDatabase(): boolean {
+  if (!config.databaseUrl) return false;
+  const url = config.databaseUrl.toLowerCase();
+  // Allow common local dev hosts
+  const localHosts = ['localhost', '127.0.0.1', '0.0.0.0', '::1', 'host.docker.internal'];
+  return localHosts.some(h => url.includes(h)) && config.nodeEnv !== 'production';
+}

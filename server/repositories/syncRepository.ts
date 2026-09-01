@@ -1,0 +1,130 @@
+/**
+ * Phase 2 — Sync Repository
+ *
+ * Foundation for pull/push synchronization.
+ * Push is idempotent; stale versions return conflict.
+ */
+import { memoryStore } from './store';
+import { SyncEntry, EntityType, OperationType } from '../types';
+import { generateId } from '../utils/crypto';
+
+const COLLECTION = 'sync_operations';
+
+export interface PushOperation {
+  id: string;
+  entityType: EntityType;
+  entityId: string;
+  operationType: OperationType;
+  clientVersion: number;
+  clientTimestamp: string;
+  payload: any;
+}
+
+export interface PullFilter {
+  since?: string;
+  entityTypes?: EntityType[];
+}
+
+export interface ISyncRepository {
+  /** Idempotent push: same operation id returns the stored result. */
+  push(userId: string, clientId: string, ops: PushOperation[]): { applied: SyncEntry[]; conflicts: SyncEntry[] };
+  pull(filter: PullFilter): SyncEntry[];
+  findByEntity(entityType: EntityType, entityId: string): SyncEntry | undefined;
+}
+
+class MemorySyncRepository implements ISyncRepository {
+  private get map() {
+    return memoryStore.getCollection(COLLECTION, `server/data/${COLLECTION}.json`);
+  }
+
+  /**
+   * Push operations. Idempotent by operation id:
+   * if an op with the same id exists and was already applied, skip it.
+   */
+  push(userId: string, _clientId: string, ops: PushOperation[]) {
+    const applied: SyncEntry[] = [];
+    const conflicts: SyncEntry[] = [];
+    const now = new Date().toISOString();
+
+    for (const op of ops) {
+      // Check idempotency: does this operation already exist?
+      const existingOpKey = `op_${op.id}`;
+      const existing = this.map.get(existingOpKey);
+      if (existing && !(existing as SyncEntry).isDeleted) {
+        // Already applied — return as-is (idempotency)
+        applied.push(existing as SyncEntry);
+        continue;
+      }
+
+      // Check version conflict
+      const currentEntity = this.findByEntity(op.entityType, op.entityId);
+      if (currentEntity && currentEntity.serverVersion > op.clientVersion) {
+        // Stale version → conflict
+        const conflictEntry: SyncEntry = {
+          id: existingOpKey,
+          entityType: op.entityType,
+          entityId: op.entityId,
+          operationType: op.operationType,
+          clientVersion: op.clientVersion,
+          serverVersion: currentEntity.serverVersion,
+          clientTimestamp: op.clientTimestamp,
+          serverTimestamp: now,
+          syncStatus: 'conflict',
+          payload: JSON.stringify(op.payload),
+          isDeleted: false,
+        };
+        this.map.set(existingOpKey, conflictEntry);
+        conflicts.push(conflictEntry);
+        continue;
+      }
+
+      const entry: SyncEntry = {
+        id: existingOpKey,
+        entityType: op.entityType,
+        entityId: op.entityId,
+        operationType: op.operationType,
+        clientVersion: op.clientVersion,
+        serverVersion: op.clientVersion + 1,
+        clientTimestamp: op.clientTimestamp,
+        serverTimestamp: now,
+        syncStatus: 'applied',
+        payload: JSON.stringify(op.payload),
+        isDeleted: false,
+      };
+      this.map.set(existingOpKey, entry);
+      applied.push(entry);
+    }
+
+    memoryStore.saveCollection(COLLECTION);
+    return { applied, conflicts };
+  }
+
+  pull(filter: PullFilter): SyncEntry[] {
+    const all = Array.from(this.map.values()) as SyncEntry[];
+    let filtered = all.filter(s => !s.isDeleted);
+
+    if (filter.since) {
+      filtered = filtered.filter(s => s.serverTimestamp > filter.since!);
+    }
+    if (filter.entityTypes && filter.entityTypes.length > 0) {
+      filtered = filtered.filter(s => filter.entityTypes!.includes(s.entityType));
+    }
+
+    return filtered.sort((a, b) => a.serverTimestamp.localeCompare(b.serverTimestamp));
+  }
+
+  findByEntity(entityType: EntityType, entityId: string): SyncEntry | undefined {
+    let latest: SyncEntry | undefined;
+    for (const s of this.map.values()) {
+      const entry = s as SyncEntry;
+      if (entry.entityType === entityType && entry.entityId === entityId && !entry.isDeleted) {
+        if (!latest || entry.serverTimestamp > latest.serverTimestamp) {
+          latest = entry;
+        }
+      }
+    }
+    return latest;
+  }
+}
+
+export const syncRepository: ISyncRepository = new MemorySyncRepository();

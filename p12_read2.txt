@@ -1,0 +1,120 @@
+
+===== src/components/AuthModal.tsx =====
+--- lines 108..135 ---
+        }, 700);
+      } catch (err: any) {
+        setAuthError(err?.message || "Échec de l'inscription. Veuillez réessayer.");
+      }
+    }
+  };
+
+  const handleQuickDemo = (roleType: UserRole) => {
+    if (roleType === 'admin') {
+      // Admin login must go through the real backend API
+      setAuthError('L\'administrateur doit se connecter via le formulaire avec ses identifiants backend.');
+      return;
+    }
+
+    const demoProfiles: Partial<Record<UserRole, UserProfile>> = {
+      artisan: {
+        id: 'demo_artisan_2026',
+        email: 'mohamed.placo@konstrivo.tn',
+        fullName: 'Mohamed Trabelsi',
+        role: 'artisan',
+        phone: '+216 98 440 210',
+        company: 'Placo & Déco Carthage Pro',
+        region: 'Grand Tunis (Ariana)',
+        isVerified: true,
+        createdAt: '2026-01-10',
+        taxNumber: '1482930/B/P/000'
+      },
+      particulier: {
+
+===== src/components/AdminDashboardModal.tsx =====
+--- lines 475..560 ---
+
+    reader.readAsText(file, 'UTF-8');
+
+    if (event.target) {
+      event.target.value = '';
+    }
+  };
+
+  // Sample CSV Download Template
+  const handleDownloadCsvSample = () => {
+    const sampleCsvContent = 
+`Nom_Materiau;Categorie;Unite;Prix_TND_HT;Note_Technique;Nom_Arabe
+Plaque BA13 Standard 3m2;placo;unit;30;Plaque plâtre NF 1.2x2.5m;بلاك با13 عادي
+Plaque BA13 Hydrofuge Vert;placo;unit;46;Plaque hydrofuge pièces humides;بلاك با13 مائي
+Laine de Roche 50mm 7.2m2;isolation;boite;90;Isolation thermique et phonique;صوف صخري 50مم
+Enduit de Joint 25kg;peinture;sac;42;Séchage rapide pour calicot;معجون فاصل 25كغ
+Carreau Grès Cérame 60x60;carrelage;m²;38;Antidérapant R11 grand passage;زليج غرانيت 60*60
+Tube PEX Sanitaire 20mm;plomberie;ml;3.5;Gainé rouge/bleu 50m;أنبوب صحي 20مم`;
+
+    const blob = new Blob([sampleCsvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'modele_catalogue_konstrivo_btp.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  // Pro Features Toggle Active Handler
+  const handleToggleProFeature = (featureId: string) => {
+    const updated = proFeatures.map(f => f.id === featureId ? { ...f, enabled: !f.enabled } : f);
+    setProFeatures(updated);
+    localStorage.setItem('konstrivo_pro_features', JSON.stringify(updated));
+  };
+
+  // Delete Pro Feature Handler
+  const handleDeleteProFeature = (featureId: string, title: string) => {
+    if (window.confirm(`Êtes-vous sûr de vouloir supprimer l'avantage "${title}" de l'offre Pro ?`)) {
+      const updated = proFeatures.filter(f => f.id !== featureId);
+      setProFeatures(updated);
+      localStorage.setItem('konstrivo_pro_features', JSON.stringify(updated));
+      setNotification(`✓ Avantage "${title}" retiré du Plan Pro.`);
+      setTimeout(() => setNotification(null), 3000);
+    }
+  };
+
+  // Update Pro Feature Field
+  const handleUpdateProFeature = (featureId: string, field: 'title' | 'description' | 'category', value: string) => {
+    const updated = proFeatures.map(f => f.id === featureId ? { ...f, [field]: value } : f);
+    setProFeatures(updated);
+    localStorage.setItem('konstrivo_pro_features', JSON.stringify(updated));
+  };
+
+  // Add New Pro Feature
+  const handleCreateProFeature = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newProFeature.title.trim() || !newProFeature.description.trim()) {
+      alert('Veuillez fournir un titre et une description pour la nouvelle fonctionnalité Pro.');
+      return;
+    }
+
+    const created: ProFeatureItem = {
+      id: `pf_${Date.now()}`,
+      title: sanitizeInput(newProFeature.title.trim()),
+      description: sanitizeInput(newProFeature.description.trim()),
+      enabled: true,
+      category: newProFeature.category
+    };
+
+    const updated = [...proFeatures, created];
+    setProFeatures(updated);
+    localStorage.setItem('konstrivo_pro_features', JSON.stringify(updated));
+
+    setNotification(`✓ Nouvelle fonctionnalité Pro "${created.title}" ajoutée à l'Offre Plan Pro !`);
+    setNewProFeature({ title: '', description: '', category: 'tools' });
+    setShowAddProFeatureForm(false);
+    setTimeout(() => setNotification(null), 3500);
+  };
+
+  // Save All Pro Features
+  const handleSaveProFeatures = () => {
+    localStorage.setItem('konstrivo_pro_features', JSON.stringify(proFeatures));
+    setNotification('✓ Tous les avantages et la grille de l\'Offre Plan Pro 2026 ont été enregistrés avec succès !');
+    setTimeout(() => setNotification(null), 3500);
