@@ -6,6 +6,7 @@ import { setupV1Router } from "./server/routes/v1";
 import { bootstrapAdmin } from "./server/bootstrap";
 import { authenticate } from './server/middleware/auth';
 import { createLimiter } from './server/middleware/rateLimit';
+import { applyCors } from './server/middleware/cors';
 import type { DevisDocument } from './src/types';
 
 // Exportable factory: create an AI estimator handler that accepts an optional aiClient.
@@ -99,6 +100,10 @@ export function createAiEstimatorHandler(aiClient?: any) {
 async function startServer() {
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+  // ── Phase 2 API: /api/v1 (mounted BEFORE Vite/SPA middleware) ──────────
+  // Apply CORS before any routes
+  applyCors(app);
 
   app.use(express.json({ limit: '10mb' }));
 

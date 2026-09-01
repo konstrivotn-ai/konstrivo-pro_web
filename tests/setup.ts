@@ -6,6 +6,7 @@
  */
 import http from 'http';
 import express from 'express';
+import { applyCors } from '../server/middleware/cors';
 import { setupV1Router } from '../server/routes/v1';
 import { authenticate } from '../server/middleware/auth';
 import { createAiEstimatorHandler } from '../server';
@@ -87,6 +88,8 @@ export async function startTestServer(opts?: { enableRateLimits?: boolean, testL
   }
 
   const app = express();
+  // Apply CORS in test apps too (reflect origin in non-production)
+  applyCors(app);
   app.use(express.json({ limit: '10mb' }));
   const v1Router = setupV1Router();
   app.use('/api/v1', v1Router);
@@ -161,6 +164,7 @@ export async function apiRequest(
     idempotencyKey?: string;
     rawBody?: Buffer | string;
     contentType?: string;
+    headers?: Record<string, string>;
   }
 ): Promise<ApiResponse> {
   return new Promise((resolve, reject) => {
@@ -181,6 +185,7 @@ export async function apiRequest(
           ...(options?.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}),
           // Ensure deterministic client identity for rate-limit tests
           'X-Forwarded-For': '127.0.0.1',
+          ...(options?.headers || {}),
         },
       },
       (res) => {
