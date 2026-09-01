@@ -7,8 +7,21 @@
 import http from 'http';
 import express from 'express';
 import { setupV1Router } from '../server/routes/v1';
+import { authenticate } from '../server/middleware/auth';
+import { createAiEstimatorHandler } from '../server';
 import { getDatabase } from '../server/db/client';
 import { isSafeDevelopmentDatabase } from '../server/config';
+
+// Exported test hook to capture what would be sent to the AI provider.
+export let lastAiRequest: any = null;
+
+export function resetLastAiRequest() {
+  lastAiRequest = null;
+}
+
+export function getLastAiRequest() {
+  return lastAiRequest;
+}
 
 export interface TestServer {
   port: number;
@@ -60,6 +73,24 @@ export async function startTestServer(): Promise<TestServer> {
   app.get('/api/health', (_req, res) => {
     res.json({ status: 'ok' });
   });
+
+  // Mount production AI estimator handler but inject a fake AI client to avoid external calls
+  const fakeAiClient = {
+    models: {
+      generateContent: async ({ model, contents, config }: any) => {
+        // capture the call for tests (stringifyable)
+        lastAiRequest = { model, contents, config };
+        return { text: 'stub' };
+      }
+    }
+  };
+
+  // Use the real production handler code but with injected fake client for tests
+  app.post('/api/ai-estimator', authenticate, createAiEstimatorHandler(fakeAiClient));
+
+  // Additional test-only route to exercise the production handler without an injected client
+  // This allows asserting 503 when GEMINI_API_KEY is missing.
+  app.post('/api/ai-estimator-prod-check', createAiEstimatorHandler());
 
   return new Promise((resolve) => {
     const server = app.listen(0, '127.0.0.1', () => {

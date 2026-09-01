@@ -64,6 +64,7 @@ async function main() {
   const { runSupplierTests } = await import('./suppliers.test');
   const { runSyncTests } = await import('./sync.test');
   const { runDirectoryTests } = await import('./directory.test');
+  const { runAiTests } = await import('./ai.test');
 
   await runAuthTests();
   await runMaterialPriceTests();
@@ -71,6 +72,7 @@ async function main() {
   await runSupplierTests();
   await runSyncTests();
   await runDirectoryTests();
+  await runAiTests();
 
   console.log('\n═══════════════════════════════════════════');
   console.log(` RESULTS: ✅ ${passed} passed | ❌ ${failed} failed`);
