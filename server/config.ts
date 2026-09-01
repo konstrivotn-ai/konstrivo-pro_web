@@ -42,6 +42,14 @@ export function loadConfig(): ServerConfig {
         'Refusing to start with an insecure token secret.'
       );
     }
+    // Additional strength check: require a reasonably long secret in production.
+    // Recommend a 32-byte random secret (e.g. `openssl rand -hex 32`).
+    if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
+      throw new Error(
+        '[KONSTRIVO] FATAL: JWT_SECRET appears too short or weak for production. ' +
+        'Provide a strong secret (recommend: 32+ characters or 32 random bytes hex).' 
+      );
+    }
   } else if (!process.env.JWT_SECRET) {
     console.warn('[KONSTRIVO] WARNING: JWT_SECRET not set — using insecure dev default. NEVER use in production.');
   }
