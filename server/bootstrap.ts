@@ -15,7 +15,7 @@
  *   - Only works when DATABASE_URL is configured
  */
 
-import { config } from './config';
+import { loadConfig } from './config';
 import { hashPassword } from './utils/crypto';
 import { drizzleUserRepository } from './repositories/drizzleUserRepository';
 import { drizzleCompanyRepository } from './repositories/drizzleCompanyRepository';
@@ -38,9 +38,44 @@ export async function bootstrapAdmin(): Promise<void> {
   }
 
   try {
+    // Re-load configuration at call time so tests can simulate different
+    // environments by mutating process.env before invoking this function.
+    const cfg = loadConfig();
     const db = await getDatabase();
     if (!db) {
       console.warn('[KONSTRIVO] Admin bootstrap: PostgreSQL not available (set DATABASE_URL)');
+      return;
+    }
+    // In production, require an explicit opt-in to allow bootstrapping an admin
+    // from environment variables. This prevents accidental or insecure admin
+    // creation when the app is deployed. Tests and development keep the
+    // original behavior (no extra flag required).
+    if (cfg.isProduction) {
+      const allowBootstrap = process.env.ADMIN_BOOTSTRAP === '1';
+      if (!allowBootstrap) {
+        console.warn('[KONSTRIVO] Admin bootstrap: disabled in production unless ADMIN_BOOTSTRAP=1 is set');
+        return;
+      }
+      // Additional safety: disallow bootstrapping against non-local databases
+      // unless explicitly allowed. This helps prevent accidental bootstrap on
+      // managed production databases.
+      const dbUrl = (cfg.databaseUrl || '').toLowerCase();
+      const localHosts = ['localhost', '127.0.0.1', '0.0.0.0', '::1', 'host.docker.internal'];
+      // Recognize a local DB by host regardless of NODE_ENV; only treat as
+      // non-local/remote when the DB URL does not contain a local host.
+      const isLocalDb = localHosts.some(h => dbUrl.includes(h));
+      if (!isLocalDb) {
+        const explicitAllow = process.env.ADMIN_BOOTSTRAP_FORCE === '1';
+        if (!explicitAllow) {
+          console.warn('[KONSTRIVO] Admin bootstrap: refusing to bootstrap on a non-local production database. Set ADMIN_BOOTSTRAP_FORCE=1 to override.');
+          return;
+        }
+      }
+    }
+
+    // In production, require a stronger admin password (prevent weak defaults).
+    if (cfg.isProduction && adminPassword.length < 16) {
+      console.error('[KONSTRIVO] Admin bootstrap: ADMIN_PASSWORD must be at least 16 characters in production');
       return;
     }
 

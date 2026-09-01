@@ -59,6 +59,7 @@ async function main() {
   console.log('═══════════════════════════════════════════\n');
 
   const { runAuthTests } = await import('./auth.test');
+  const { runBootstrapTests } = await import('./bootstrap.test');
   const { runMaterialPriceTests } = await import('./materials.test');
   const { runDevisTests } = await import('./devis.test');
   const { runSupplierTests } = await import('./suppliers.test');
@@ -66,6 +67,7 @@ async function main() {
   const { runDirectoryTests } = await import('./directory.test');
   const { runAiTests } = await import('./ai.test');
 
+  await runBootstrapTests();
   await runAuthTests();
   await runMaterialPriceTests();
   await runDevisTests();
