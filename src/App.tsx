@@ -29,7 +29,7 @@ import {
   MarketProduct, MaintenanceTicket, UserProfile
 } from './types';
 import { DEFAULT_MARKET_RATES } from './data/marketRates';
-import { restoreSession, logout } from './lib/api';
+import { restoreSession, logout, listDevis, createDevis, updateDevis, deleteDevis } from './lib/api';
 import { COUNTRIES_CONFIG } from './data/countryConfig';
 import { 
   INITIAL_PROJECTS, INITIAL_ARTISANS, INITIAL_MARKETPLACE_PRODUCTS, 
@@ -271,7 +271,35 @@ export default function App() {
     }));
   };
 
-  const handleSaveDevisHistory = (devisToSave: DevisDocument) => {
+  const handleSaveDevisHistory = async (devisToSave: DevisDocument) => {
+    // If authenticated and online, try to persist to API. Fall back to localStorage on error.
+    if (currentUser && !isOffline) {
+      try {
+        // Local-created IDs start with 'dev-'; use them as idempotency keys when creating.
+        if (devisToSave.id && devisToSave.id.startsWith('dev-')) {
+          const created = await createDevis(devisToSave, devisToSave.id);
+          setDevisHistory(prev => {
+            const filtered = prev.filter(d => d.id !== devisToSave.id);
+            return [created, ...filtered];
+          });
+          setCurrentDevis(created as any);
+          return;
+        }
+
+        // Otherwise assume this maps to a server-side record and perform optimistic update.
+        const payload = { ...devisToSave, expectedVersion: devisToSave.version ?? (devisToSave as any).expectedVersion };
+        const updated = await updateDevis(devisToSave.id, payload);
+        setDevisHistory(prev => prev.map(d => d.id === (updated as any).id ? (updated as any) : d));
+        setCurrentDevis(updated as DevisDocument);
+        return;
+      } catch (err) {
+        // sync failed — continue to save locally
+        // eslint-disable-next-line no-console
+        console.warn('Devis sync failed, falling back to local save', err);
+      }
+    }
+
+    // Local-only fallback (unchanged behavior)
     setDevisHistory(prev => {
       const existsIndex = prev.findIndex(d => d.id === devisToSave.id);
       if (existsIndex >= 0) {
@@ -288,9 +316,40 @@ export default function App() {
     setActiveTab('devis');
   };
 
-  const handleDeleteFromHistory = (id: string) => {
+  const handleDeleteFromHistory = async (id: string) => {
+    if (currentUser && !isOffline) {
+      try {
+        await deleteDevis(id);
+        setDevisHistory(prev => prev.filter(d => d.id !== id));
+        return;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('Failed to delete remote devis, falling back to local delete', err);
+      }
+    }
     setDevisHistory(prev => prev.filter(d => d.id !== id));
   };
+
+  // When a user is authenticated and not in offline mode, pull remote Devis and merge
+  useEffect(() => {
+    let active = true;
+    if (!currentUser || isOffline) return;
+    (async () => {
+      try {
+        const res = await listDevis({ limit: 200 });
+        const serverDevis = (res && (res as any).data) || [];
+        if (!active) return;
+        setDevisHistory(prev => {
+          const map = new Map<string, any>(prev.map(d => [d.id, d]));
+          for (const s of serverDevis) map.set(s.id, s);
+          return Array.from(map.values()).sort((a: any, b: any) => new Date(b.createdAt || b.date).getTime() - new Date(a.createdAt || a.date).getTime());
+        });
+      } catch (err) {
+        // Ignore sync failure — keep local history
+      }
+    })();
+    return () => { active = false; };
+  }, [currentUser, isOffline]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-amber-500 selection:text-slate-950">

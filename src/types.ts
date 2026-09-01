@@ -132,6 +132,8 @@ export interface DevisDocument {
   subtotalLaborTnd?: number;
   discountTnd?: number;
   totalTnd?: number;
+  // Optimistic concurrency version maintained by server (integer)
+  version?: number;
   tvaPercent: number;
   timbreFiscal: number;
   timbreFiscalTnd?: number;

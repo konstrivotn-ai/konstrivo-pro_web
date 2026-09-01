@@ -196,3 +196,47 @@ export async function logout(): Promise<void> {
   }
   setAccessToken(null);
 }
+
+// ---------------- Devis API (minimal client wrappers) --------------------
+export async function listDevis(opts?: { page?: number; limit?: number; status?: string; search?: string }) {
+  const q = new URLSearchParams();
+  if (opts?.page) q.set('page', String(opts.page));
+  if (opts?.limit) q.set('limit', String(opts.limit));
+  if (opts?.status) q.set('status', opts.status);
+  if (opts?.search) q.set('search', opts.search);
+  const url = `${BASE}/devis${q.toString() ? '?' + q.toString() : ''}`;
+  const res = await apiFetch(url, { method: 'GET' });
+  if (!res.ok) throw new Error('Failed to list devis');
+  return await res.json().catch(() => ({ data: [], page: 1, limit: 20, total: 0 }));
+}
+
+export async function createDevis(body: any, idempotencyKey?: string) {
+  const headers: Record<string, string> = {};
+  if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
+  const res = await apiFetch(`${BASE}/devis`, { method: 'POST', body: JSON.stringify(body), headers });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any)?.error?.message || 'Failed to create devis');
+  }
+  const data = await res.json();
+  return data.data || data;
+}
+
+export async function updateDevis(id: string, body: any) {
+  const res = await apiFetch(`${BASE}/devis/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any)?.error?.message || 'Failed to update devis');
+  }
+  const data = await res.json();
+  return data.data || data;
+}
+
+export async function deleteDevis(id: string) {
+  const res = await apiFetch(`${BASE}/devis/${id}`, { method: 'DELETE' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any)?.error?.message || 'Failed to delete devis');
+  }
+  return;
+}
