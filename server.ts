@@ -5,6 +5,7 @@ import { createServer as createViteServer } from "vite";
 import { setupV1Router } from "./server/routes/v1";
 import { bootstrapAdmin } from "./server/bootstrap";
 import { authenticate } from './server/middleware/auth';
+import { createLimiter } from './server/middleware/rateLimit';
 import type { DevisDocument } from './src/types';
 
 // Exportable factory: create an AI estimator handler that accepts an optional aiClient.
@@ -111,7 +112,7 @@ async function startServer() {
   });
 
   // Gemini AI Construction Estimator Assistant (secured) — single source of truth
-  app.post('/api/ai-estimator', authenticate, createAiEstimatorHandler());
+  app.post('/api/ai-estimator', authenticate, createLimiter('aiEstimator'), createAiEstimatorHandler());
 
   // Vite middleware in Development
   if (process.env.NODE_ENV !== "production") {

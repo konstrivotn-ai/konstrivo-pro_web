@@ -19,6 +19,7 @@ import {
 import { User, Company, UserRole, UserTier } from '../../types';
 import { config } from '../../config';
 import { setRefreshCookie, clearRefreshCookie, getCookie, REFRESH_COOKIE_NAME } from '../../utils/cookies';
+import { createLimiter } from '../../middleware/rateLimit';
 
 const router = Router();
 const meRouter = Router();
@@ -49,7 +50,7 @@ function buildToken(user: User, companyId: string) {
 
 // ── POST /register ────────────────────────────────────────────────────────
 
-router.post('/register', validateBody([
+router.post('/register', createLimiter('register'), validateBody([
   { field: 'email', label: 'Email', required: true, type: 'string', max: 254 },
   { field: 'password', label: 'Password', required: true, type: 'string', min: 8, max: 128 },
   { field: 'fullName', label: 'Full name', required: true, type: 'string', min: 2, max: 200 },
@@ -115,7 +116,7 @@ router.post('/register', validateBody([
 
 // ── POST /login ───────────────────────────────────────────────────────────
 
-router.post('/login', validateBody([
+router.post('/login', createLimiter('login'), validateBody([
   { field: 'email', label: 'Email', required: true, type: 'string', max: 254 },
   { field: 'password', label: 'Password', required: true, type: 'string', min: 1, max: 128 },
 ]), async (req, res, next) => {
@@ -148,7 +149,7 @@ router.post('/login', validateBody([
 
 // ── POST /refresh ─────────────────────────────────────────────────────────
 
-router.post('/refresh', async (req, res, next) => {
+router.post('/refresh', createLimiter('refresh'), async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
     let token = (authHeader && authHeader.startsWith('Bearer '))

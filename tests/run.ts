@@ -6,8 +6,13 @@
  *
  * Usage: npm test   (or)   tsx tests/run.ts
  */
+// Ensure test environment flag is set before any module imports that may
+// construct rate limiters at import time.
+process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 import { strictEqual, ok as assertOk } from 'assert';
 import { startTestServer, apiRequest, TestServer } from './setup';
+// Ensure test environment flag is set early so modules can adjust behavior.
+process.env.NODE_ENV = process.env.NODE_ENV || 'test';
 import { memoryStore } from '../server/repositories/store';
 
 let passed = 0;
@@ -66,6 +71,7 @@ async function main() {
   const { runSyncTests } = await import('./sync.test');
   const { runDirectoryTests } = await import('./directory.test');
   const { runAiTests } = await import('./ai.test');
+  const { runRateLimitTests } = await import('./rate_limit.test');
 
   await runBootstrapTests();
   await runAuthTests();
@@ -74,6 +80,7 @@ async function main() {
   await runSupplierTests();
   await runSyncTests();
   await runDirectoryTests();
+  await runRateLimitTests();
   await runAiTests();
 
   console.log('\n═══════════════════════════════════════════');
