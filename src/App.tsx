@@ -743,22 +743,24 @@ export default function App() {
                 <li><button onClick={() => setActiveTab('directory_market')} className="hover:text-amber-400">Annuaire des Artisans</button></li>
                 <li><button onClick={() => setShowCatalogModal(true)} className="hover:text-amber-400">Import Barème Fournisseur</button></li>
                 <li><button onClick={() => setActiveTab('about')} className="hover:text-amber-400">Normes DTU & Mentions Légales</button></li>
-                <li>
-                                    <button 
-                    onClick={openAdminModal} 
-                    className="text-amber-400/80 hover:text-amber-300 font-mono text-[11px] font-bold flex items-center gap-1 mt-1 cursor-pointer"
-                  >
-                    🛡️ Espace Administration
-                  </button>
-                </li>
+                {currentUser?.role === 'admin' && (
+                  <li>
+                    <button
+                      onClick={openAdminModal}
+                      className="text-amber-400/80 hover:text-amber-300 font-mono text-[11px] font-bold flex items-center gap-1 mt-1 cursor-pointer"
+                    >
+                      🛡️ Espace Administration
+                    </button>
+                  </li>
+                )}
               </ul>
             </div>
 
             <div className="space-y-2">
               <span className="font-bold text-white text-xs block">Contact & Support</span>
-              <p className="text-[11px] text-slate-400">
+                <p className="text-[11px] text-slate-400">
                 Centre Urbain Nord, Tunis<br />
-                WhatsApp Direct : +216 98 440 210<br />
+                WhatsApp Direct : +216 50 772 371<br />
                 Email : konstrivo.tn@gmail.com
               </p>
               <button

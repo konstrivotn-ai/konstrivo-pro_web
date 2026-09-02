@@ -62,7 +62,7 @@ export const ContactTab: React.FC<ContactTabProps> = ({ lang }) => {
 
   const handleOpenWhatsApp = () => {
     const text = encodeURIComponent("Bonjour KONSTRIVO BTP, je souhaite obtenir des informations techniques ou un partenariat pour mon entreprise.");
-    window.open(`https://wa.me/21698440210?text=${text}`, '_blank');
+    window.open(`https://wa.me/21650772371?text=${text}`, '_blank');
   };
 
   return (
@@ -90,7 +90,7 @@ export const ContactTab: React.FC<ContactTabProps> = ({ lang }) => {
               className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-emerald-600/20 transition-all flex items-center gap-2"
             >
               <MessageSquare className="w-4 h-4" />
-              <span>Assistance Directe WhatsApp : +216 98 440 210</span>
+              <span>Assistance Directe WhatsApp : +216 50 772 371</span>
             </button>
             <a
               href="tel:+21671889900"
