@@ -1,5 +1,5 @@
 ﻿import React, { useState } from 'react';
-import { X, User, Shield, Briefcase, Store, Compass, CheckCircle2, Lock, Mail, Phone, Building, MapPin, Sparkles, LogOut, ShieldCheck } from 'lucide-react';
+import { X, User, Shield, Briefcase, Store, Compass, CheckCircle2, Lock, Mail, Phone, Building, MapPin, Sparkles, LogOut, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 import { UserProfile, UserRole, Language } from '../types';
 import { login, register } from '../lib/api';
 
@@ -26,6 +26,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [role, setRole] = useState<UserRole>('artisan');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [fullName, setFullName] = useState('');
   const [phone, setPhone] = useState('');
   const [company, setCompany] = useState('');
@@ -33,6 +34,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [taxNumber, setTaxNumber] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [authError, setAuthError] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
 
   if (!isOpen) return null;
 
@@ -90,6 +93,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     } else {
       // Register
       try {
+        // Client-side validations: password match and minimal policy
+        if (password !== confirmPassword) {
+          setAuthError("Les mots de passe ne correspondent pas.");
+          return;
+        }
+        if (password.length < 8) {
+          setAuthError("Le mot de passe doit contenir au moins 8 caractères.");
+          return;
+        }
+
         const profile = await register({
           email: email.trim(),
           password,
@@ -107,7 +120,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           onClose();
         }, 700);
       } catch (err: any) {
-        setAuthError(err?.message || "Échec de l'inscription. Veuillez réessayer.");
+        const msg = err?.message || '';
+        // Map common backend messages to friendly French messages
+        if (msg.includes('An account with this email already exists') || msg.includes('already exists')) {
+          setAuthError('Cet e-mail est déjà utilisé.');
+        } else if (msg.includes('Password must be at least') || msg.includes('Password must be at least')) {
+          setAuthError('Le mot de passe doit contenir au moins 8 caractères.');
+        } else if (msg.includes('Invalid email')) {
+          setAuthError('Format d\'email invalide.');
+        } else {
+          setAuthError('Échec de l\'inscription. Problème temporaire, réessayez plus tard.');
+        }
       }
     }
   };
@@ -126,13 +149,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
             <div>
               <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                {isUserAdmin ? 'Espace Administration Général' : currentUser ? 'Espace Professionnel KONSTRIVO' : (mode === 'login' ? 'Connexion Espace BTP' : 'Créer un Compte Professionnel')}
+                {isUserAdmin ? 'Espace Administration Général' : currentUser ? 'Espace Professionnel KONSTRIVO' : (mode === 'login' ? 'Connexion Espace BTP' : 'Créer votre compte KONSTRIVO')}
                 <span className="px-2 py-0.5 text-[10px] font-black uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-full font-mono">
                   Édition 2026
                 </span>
               </h3>
               <p className="text-xs text-slate-400">
-                {isUserAdmin ? 'Accès au panneau propriétaire et gestion globale' : 'Accédez aux calculs métrés, gestion chantiers, tarifs synchronisés et devis certifiés'}
+                {isUserAdmin ? 'Accès au panneau propriétaire et gestion globale' : (mode === 'register' ? 'Choisissez votre profil pour accéder aux fonctionnalités adaptées à votre activité.' : 'Accédez aux calculs métrés, gestion chantiers, tarifs synchronisés et devis certifiés')}
               </p>
             </div>
           </div>
@@ -319,7 +342,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       : 'border-transparent text-slate-400 hover:text-slate-200'
                   }`}
                 >
-                  Créer un Compte Pro
+                  Créer un compte
                 </button>
               </div>
 
@@ -426,15 +449,53 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <div className="relative">
                     <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
                     <input
-                      type="password"
+                      type={showPassword ? 'text' : 'password'}
                       required
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••••••"
-                      className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white focus:border-amber-400 focus:outline-none"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-12 py-2.5 text-sm text-white focus:border-amber-400 focus:outline-none"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200"
+                      aria-label={showPassword ? 'Masquer le mot de passe' : 'Afficher le mot de passe'}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
                   </div>
+                  {mode === 'login' && (
+                    <div className="mt-2 text-right">
+                      <span className="text-xs text-amber-400 cursor-not-allowed" title="Disponible dans Phase 2">Mot de passe oublié ?</span>
+                    </div>
+                  )}
                 </div>
+
+                {mode === 'register' && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1">Confirmer le mot de passe</label>
+                    <div className="relative">
+                      <Lock className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
+                      <input
+                        type={showConfirm ? 'text' : 'password'}
+                        required
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="••••••••••••"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-12 py-2.5 text-sm text-white focus:border-amber-400 focus:outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirm(!showConfirm)}
+                        className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-200"
+                        aria-label={showConfirm ? 'Masquer confirmation' : 'Afficher confirmation'}
+                      >
+                        {showConfirm ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {mode === 'register' && (role === 'artisan' || role === 'fournisseur') && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -471,7 +532,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold rounded-xl shadow-lg shadow-amber-500/20 transition-all cursor-pointer flex items-center justify-center gap-2"
                 >
                   <Sparkles className="w-4 h-4" />
-                  {mode === 'login' ? 'Se Connecter' : 'Créer mon Compte BTP Certifié'}
+                  {mode === 'login' ? 'Se Connecter' : 'Créer mon compte KONSTRIVO'}
                 </button>
               </form>
             </div>
