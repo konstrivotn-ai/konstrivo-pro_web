@@ -8,6 +8,8 @@ import { memoryStore } from './store';
 import { Material, PaginatedResult } from '../types';
 import { generateId } from '../utils/crypto';
 import { buildMaterialsFromRates } from './seed';
+import { isDatabaseAvailable } from '../db/client';
+import * as drizzleRepo from './drizzleMaterialRepository';
 
 const COLLECTION = 'materials';
 
@@ -23,12 +25,12 @@ export interface MaterialFilters {
 
 export interface IMaterialRepository {
   ensureSeeded(): void;
-  findById(id: string): Material | undefined;
-  findByCode(code: string): Material | undefined;
-  list(filters: MaterialFilters): PaginatedResult<Material>;
-  create(data: Partial<Material>): Material;
-  update(id: string, patch: Partial<Material>): Material;
-  softDelete(id: string): void;
+  findById(id: string): Promise<Material | undefined> | Material | undefined;
+  findByCode(code: string): Promise<Material | undefined> | Material | undefined;
+  list(filters: MaterialFilters): Promise<PaginatedResult<Material>> | PaginatedResult<Material>;
+  create(data: Partial<Material>): Promise<Material> | Material;
+  update(id: string, patch: Partial<Material>): Promise<Material> | Material;
+  softDelete(id: string): Promise<void> | void;
   count(): number;
 }
 
@@ -38,6 +40,9 @@ class MemoryMaterialRepository implements IMaterialRepository {
   }
 
   ensureSeeded(): void {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('[KONSTRIVO] Material repository: in-memory seeding is not allowed in production. Implement Drizzle/Postgres repository.');
+    }
     if (this.map.size === 0) {
       const { materials } = buildMaterialsFromRates();
       for (const m of materials) {
@@ -153,4 +158,16 @@ class MemoryMaterialRepository implements IMaterialRepository {
   }
 }
 
-export const materialRepository: IMaterialRepository = new MemoryMaterialRepository();
+class HybridMaterialRepository implements IMaterialRepository {
+  private memory = new MemoryMaterialRepository();
+  async ensureSeeded(): Promise<void> { return this.memory.ensureSeeded(); }
+  async findById(id: string) { if (await isDatabaseAvailable()) return await drizzleRepo.findMaterialById(id); return this.memory.findById(id); }
+  async findByCode(code: string) { if (await isDatabaseAvailable()) return await drizzleRepo.findMaterialByCode(code); return this.memory.findByCode(code); }
+  async list(filters: MaterialFilters) { if (await isDatabaseAvailable()) return await drizzleRepo.listMaterials(filters); return this.memory.list(filters); }
+  async create(data: Partial<Material>) { if (await isDatabaseAvailable()) return await drizzleRepo.createMaterial(data); return this.memory.create(data); }
+  async update(id: string, patch: Partial<Material>) { if (await isDatabaseAvailable()) return await drizzleRepo.updateMaterial(id, patch); return this.memory.update(id, patch); }
+  async softDelete(id: string) { if (await isDatabaseAvailable()) return await drizzleRepo.softDeleteMaterial(id); return this.memory.softDelete(id); }
+  count(): number { return this.memory.count(); }
+}
+
+export const materialRepository: IMaterialRepository = new HybridMaterialRepository();

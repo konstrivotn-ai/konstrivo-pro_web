@@ -3,9 +3,9 @@ import {
 } from '../types';
 
 // Guard mock/demo data so Production never exposes or depends on it.
-// Enable mocks in non-production or when explicitly requested with
-// ENABLE_MOCK_DATA=1 in the environment (useful for CI/dev demo builds).
-const ENABLE_MOCK_DATA = (process.env.NODE_ENV !== 'production') || process.env.ENABLE_MOCK_DATA === '1';
+// Mocks are ALWAYS disabled in production regardless of environment flags.
+// Only non-production environments may use the built-in mock/demo datasets.
+const ENABLE_MOCK_DATA = process.env.NODE_ENV !== 'production';
 
 const _INITIAL_USER_PROFILES: UserProfile[] = [
   {

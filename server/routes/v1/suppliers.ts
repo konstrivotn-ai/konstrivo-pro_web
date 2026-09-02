@@ -28,7 +28,7 @@ router.post('/upload',
   authenticate,
   express.raw({ type: ['multipart/form-data', 'text/csv'], limit: '10mb' }),
   handleUpload,
-  (req: UploadRequest & AuthenticatedRequest, res: Response, next) => {
+  async (req: UploadRequest & AuthenticatedRequest, res: Response, next) => {
     try {
       const file = req.uploadedFiles?.[0];
       const contentType = req.headers['content-type'] || '';
@@ -77,7 +77,7 @@ router.post('/upload',
       // Parse CSV rows → SupplierCatalogItem[] (ISOLATED — never mutates official data)
       try {
         const rows: CsvRow[] = parseCsv(csvContent);
-        const items: SupplierCatalogItem[] = rows.map(row => {
+        const items: SupplierCatalogItem[] = await Promise.all(rows.map(async row => {
           const nameFr = row['Designation'] || row['nameFr'] || '';
           const category = row['Categorie'] || row['category'] || row['trade'] || '';
           const unit = row['Unite'] || row['unit'] || 'unit';
@@ -86,7 +86,7 @@ router.post('/upload',
           const materialCode = row['Reference'] || row['materialCode'] || '';
 
           // Try to match against official materials (read-only lookup)
-          const matched = materialRepository.findByCode(materialCode);
+          const matched = await (materialRepository as any).findByCode(materialCode);
 
           return {
             id: generateId(),
@@ -103,7 +103,7 @@ router.post('/upload',
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           };
-        });
+        }));
         supplierImportRepository.setParsedItems(imp.id, items);
       } catch (parseErr) {
         // Parsing failure keeps the import in UPLOADED state with a note.

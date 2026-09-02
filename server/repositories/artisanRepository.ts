@@ -5,8 +5,11 @@
  * Seeded from INITIAL_ARTISANS on first access.
  */
 import { memoryStore } from './store';
+import { config } from '../config';
 import { ArtisanProfile, PaginatedResult } from '../types';
 import { buildArtisansFromMock } from './seed';
+import { isDatabaseAvailable } from '../db/client';
+import * as drizzleRepo from './drizzleArtisanRepository';
 
 const COLLECTION = 'artisans';
 
@@ -20,9 +23,9 @@ export interface ArtisanFilters {
 }
 
 export interface IArtisanRepository {
-  ensureSeeded(): void;
-  findById(id: string): ArtisanProfile | undefined;
-  list(filters: ArtisanFilters): PaginatedResult<ArtisanProfile>;
+  ensureSeeded(): void | Promise<void>;
+  findById(id: string): Promise<ArtisanProfile | undefined> | ArtisanProfile | undefined;
+  list(filters: ArtisanFilters): Promise<PaginatedResult<ArtisanProfile>> | PaginatedResult<ArtisanProfile>;
 }
 
 class MemoryArtisanRepository implements IArtisanRepository {
@@ -31,6 +34,9 @@ class MemoryArtisanRepository implements IArtisanRepository {
   }
 
   ensureSeeded(): void {
+    if (config.isProduction) {
+      throw new Error('[KONSTRIVO] Artisan repository: in-memory seeding is not allowed in production. Implement Drizzle/Postgres repository.');
+    }
     if (this.map.size === 0) {
       for (const a of buildArtisansFromMock()) {
         this.map.set(a.id, a);
@@ -84,4 +90,11 @@ class MemoryArtisanRepository implements IArtisanRepository {
   }
 }
 
-export const artisanRepository: IArtisanRepository = new MemoryArtisanRepository();
+class HybridArtisanRepository implements IArtisanRepository {
+  private memory = new MemoryArtisanRepository();
+  async ensureSeeded() { return this.memory.ensureSeeded(); }
+  async findById(id: string) { if (await isDatabaseAvailable()) return await drizzleRepo.findArtisanById(id); return this.memory.findById(id); }
+  async list(filters: ArtisanFilters) { if (await isDatabaseAvailable()) return await drizzleRepo.listArtisans(filters); return this.memory.list(filters); }
+}
+
+export const artisanRepository: IArtisanRepository = new HybridArtisanRepository();

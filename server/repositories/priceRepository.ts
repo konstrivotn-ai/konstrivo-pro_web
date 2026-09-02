@@ -5,9 +5,12 @@
  * Seeded from DEFAULT_MARKET_RATES on first access.
  */
 import { memoryStore } from './store';
+import { config } from '../config';
 import { MaterialPrice, PaginatedResult, PriceSource } from '../types';
 import { generateId } from '../utils/crypto';
 import { buildMaterialsFromRates, PRICE_SOURCES } from './seed';
+import { isDatabaseAvailable } from '../db/client';
+import * as drizzleRepo from './drizzlePriceRepository';
 
 const COLLECTION = 'material_prices';
 
@@ -22,14 +25,14 @@ export interface PriceFilters {
 }
 
 export interface IPriceRepository {
-  ensureSeeded(): void;
-  findById(id: string): MaterialPrice | undefined;
-  list(filters: PriceFilters): PaginatedResult<MaterialPrice>;
-  getCurrentPrice(materialId: string, currency?: string, market?: string): MaterialPrice | undefined;
-  create(data: Partial<MaterialPrice>): MaterialPrice;
-  update(id: string, patch: Partial<MaterialPrice>): MaterialPrice;
-  softDelete(id: string): void;
-  getPriceSources(): typeof PRICE_SOURCES;
+  ensureSeeded(): void | Promise<void>;
+  findById(id: string): Promise<MaterialPrice | undefined> | MaterialPrice | undefined;
+  list(filters: PriceFilters): Promise<PaginatedResult<MaterialPrice>> | PaginatedResult<MaterialPrice>;
+  getCurrentPrice(materialId: string, currency?: string, market?: string): Promise<MaterialPrice | undefined> | MaterialPrice | undefined;
+  create(data: Partial<MaterialPrice>): Promise<MaterialPrice> | MaterialPrice;
+  update(id: string, patch: Partial<MaterialPrice>): Promise<MaterialPrice> | MaterialPrice;
+  softDelete(id: string): Promise<void> | void;
+  getPriceSources(): Promise<typeof PRICE_SOURCES> | typeof PRICE_SOURCES;
 }
 
 class MemoryPriceRepository implements IPriceRepository {
@@ -38,6 +41,9 @@ class MemoryPriceRepository implements IPriceRepository {
   }
 
   ensureSeeded(): void {
+    if (config.isProduction) {
+      throw new Error('[KONSTRIVO] Price repository: in-memory seeding is not allowed in production. Implement Drizzle/Postgres repository.');
+    }
     if (this.map.size === 0) {
       const { prices } = buildMaterialsFromRates();
       for (const p of prices) {
@@ -170,4 +176,16 @@ class MemoryPriceRepository implements IPriceRepository {
   }
 }
 
-export const priceRepository: IPriceRepository = new MemoryPriceRepository();
+class HybridPriceRepository implements IPriceRepository {
+  private memory = new MemoryPriceRepository();
+  async ensureSeeded() { return this.memory.ensureSeeded(); }
+  async findById(id: string) { if (await isDatabaseAvailable()) return await drizzleRepo.findPriceById(id); return this.memory.findById(id); }
+  async list(filters: PriceFilters) { if (await isDatabaseAvailable()) return await drizzleRepo.listPrices(filters); return this.memory.list(filters); }
+  async getCurrentPrice(materialId: string, currency?: string, market?: string) { if (await isDatabaseAvailable()) return await drizzleRepo.getCurrentPrice(materialId, currency, market); return this.memory.getCurrentPrice(materialId, currency, market); }
+  async create(data: Partial<MaterialPrice>) { if (await isDatabaseAvailable()) return await drizzleRepo.createPrice(data); return this.memory.create(data); }
+  async update(id: string, patch: Partial<MaterialPrice>) { if (await isDatabaseAvailable()) return await drizzleRepo.updatePrice(id, patch); return this.memory.update(id, patch); }
+  async softDelete(id: string) { if (await isDatabaseAvailable()) return await drizzleRepo.updatePrice(id, { isDeleted: true }); return this.memory.softDelete(id); }
+  async getPriceSources() { if (await isDatabaseAvailable()) return await drizzleRepo.getPriceSources(); return this.memory.getPriceSources(); }
+}
+
+export const priceRepository: IPriceRepository = new HybridPriceRepository();

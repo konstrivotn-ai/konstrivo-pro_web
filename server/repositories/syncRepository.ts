@@ -7,6 +7,9 @@
 import { memoryStore } from './store';
 import { SyncEntry, EntityType, OperationType } from '../types';
 import { generateId } from '../utils/crypto';
+import { config } from '../config';
+import { isDatabaseAvailable } from '../db/client';
+import * as drizzleRepo from './drizzleSyncRepository';
 
 const COLLECTION = 'sync_operations';
 
@@ -27,9 +30,9 @@ export interface PullFilter {
 
 export interface ISyncRepository {
   /** Idempotent push: same operation id returns the stored result. */
-  push(userId: string, clientId: string, ops: PushOperation[]): { applied: SyncEntry[]; conflicts: SyncEntry[] };
-  pull(filter: PullFilter): SyncEntry[];
-  findByEntity(entityType: EntityType, entityId: string): SyncEntry | undefined;
+  push(userId: string, clientId: string, ops: PushOperation[]): Promise<{ applied: SyncEntry[]; conflicts: SyncEntry[] }>|{ applied: SyncEntry[]; conflicts: SyncEntry[] };
+  pull(filter: PullFilter): Promise<SyncEntry[]>|SyncEntry[];
+  findByEntity(entityType: EntityType, entityId: string): Promise<SyncEntry | undefined>|SyncEntry | undefined;
 }
 
 class MemorySyncRepository implements ISyncRepository {
@@ -42,6 +45,9 @@ class MemorySyncRepository implements ISyncRepository {
    * if an op with the same id exists and was already applied, skip it.
    */
   push(userId: string, _clientId: string, ops: PushOperation[]) {
+    if (config.isProduction) {
+      throw new Error('[KONSTRIVO] Sync repository: in-memory sync is not allowed in production. Implement Drizzle/Postgres-backed sync.');
+    }
     const applied: SyncEntry[] = [];
     const conflicts: SyncEntry[] = [];
     const now = new Date().toISOString();
@@ -127,4 +133,11 @@ class MemorySyncRepository implements ISyncRepository {
   }
 }
 
-export const syncRepository: ISyncRepository = new MemorySyncRepository();
+class HybridSyncRepository implements ISyncRepository {
+  private memory = new MemorySyncRepository();
+  async push(userId: string, clientId: string, ops: PushOperation[]) { if (await isDatabaseAvailable()) return await drizzleRepo.pushSync(userId, clientId, ops); return this.memory.push(userId, clientId, ops); }
+  async pull(filter: PullFilter) { if (await isDatabaseAvailable()) return await drizzleRepo.pullSync(filter); return this.memory.pull(filter); }
+  async findByEntity(entityType: EntityType, entityId: string) { if (await isDatabaseAvailable()) return await drizzleRepo.findSyncByEntity(entityType, entityId); return this.memory.findByEntity(entityType, entityId); }
+}
+
+export const syncRepository: ISyncRepository = new HybridSyncRepository();

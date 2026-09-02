@@ -21,10 +21,10 @@ router.post('/pull',
     { field: 'since', label: 'Since timestamp', type: 'string' },
     { field: 'entityTypes', label: 'Entity types', type: 'array' },
   ]),
-  (req: AuthenticatedRequest, res: Response, next) => {
+  async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const { since, entityTypes } = req.body || {};
-      const entries = syncRepository.pull({
+      const entries = await (syncRepository as any).pull({
         since,
         entityTypes: entityTypes as EntityType[] | undefined,
       });
@@ -42,7 +42,7 @@ router.post('/push',
   validateBody([
     { field: 'operations', label: 'Operations', required: true, type: 'array', min: 1 },
   ]),
-  (req: AuthenticatedRequest, res: Response, next) => {
+  async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const operations = req.body?.operations;
       const clientId = req.body?.clientId || 'unknown';
@@ -53,7 +53,7 @@ router.post('/push',
         }
       }
 
-      const { applied, conflicts } = syncRepository.push(req.user!.uid, clientId, operations);
+      const { applied, conflicts } = await (syncRepository as any).push(req.user!.uid, clientId, operations);
 
       res.json({
         applied: applied.map(e => ({

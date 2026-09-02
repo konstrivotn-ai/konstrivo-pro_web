@@ -55,6 +55,11 @@ export function loadConfig(): ServerConfig {
   }
 
   const databaseUrl = process.env.DATABASE_URL || undefined;
+  // In production we require a configured DATABASE_URL; refuse to run in
+  // memory/mock mode to avoid accidentally exposing seeded demo data.
+  if (process.env.NODE_ENV === 'production' && !databaseUrl) {
+    throw new Error('[KONSTRIVO] FATAL: DATABASE_URL must be configured in production. Refusing to start in memory mode.');
+  }
   if (databaseUrl && process.env.NODE_ENV === 'development') {
     console.log('[KONSTRIVO] DATABASE_URL detected — PostgreSQL mode enabled.');
   }

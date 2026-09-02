@@ -111,3 +111,43 @@ export const idempotencyKeys = pgTable('idempotency_keys', {
   responseSnapshot: jsonb('response_snapshot'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * projects (Chantiers) — construction/renovation projects
+ * Links to company and manager (user).
+ * phases, logs, team stored as JSONB snapshots.
+ */
+export const projects = pgTable('projects', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  companyId: uuid('company_id').notNull().references(() => companies.id),
+  managerUserId: uuid('manager_user_id').references(() => users.id),
+  code: varchar('code', { length: 50 }).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  clientName: varchar('client_name', { length: 200 }),
+  clientPhone: varchar('client_phone', { length: 20 }),
+  address: text('address'),
+  region: varchar('region', { length: 100 }),
+  country: varchar('country', { length: 5 }).notNull().default('TN'),
+  currency: varchar('currency', { length: 5 }).notNull().default('TND'),
+  type: varchar('type', { length: 30 }).notNull().default('residentiel'),
+  status: varchar('status', { length: 30 }).notNull().default('planification'),
+  progressPercent: numeric('progress_percent', { precision: 5, scale: 2 }).notNull().default('0'),
+  budgetTotalHt: numeric('budget_total_ht', { precision: 15, scale: 3 }),
+  depensesActuellesHt: numeric('depenses_actuelles_ht', { precision: 15, scale: 3 }).notNull().default('0'),
+  startDate: timestamp('start_date', { withTimezone: true }),
+  targetEndDate: timestamp('target_end_date', { withTimezone: true }),
+  phases: jsonb('phases').notNull().default('[]'),
+  logs: jsonb('logs').notNull().default('[]'),
+  team: jsonb('team').notNull().default('[]'),
+  notes: text('notes'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  version: integer('version').notNull().default(1),
+  isDeleted: boolean('is_deleted').notNull().default(false),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+}, (table) => ({
+  idxCompany: index('idx_projects_company').on(table.companyId),
+  idxManager: index('idx_projects_manager').on(table.managerUserId),
+  idxStatus: index('idx_projects_status').on(table.status),
+  idxDeleted: index('idx_projects_deleted').on(table.isDeleted),
+}));

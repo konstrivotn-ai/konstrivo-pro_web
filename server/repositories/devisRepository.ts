@@ -2,8 +2,11 @@
  * Phase 2 - Devis Repository
  */
 import { memoryStore } from './store';
+import { config } from '../config';
 import { Devis, DevisItem, PaginatedResult, DevisStatus } from '../types';
 import { generateId } from '../utils/crypto';
+import { isDatabaseAvailable } from '../db/client';
+import * as drizzleRepo from './drizzleDevisRepository';
 
 const COLLECTION = 'devis';
 const COLLECTION_IDEM = 'devis_idempotency';
@@ -37,13 +40,13 @@ export interface CreateDevisInput {
 }
 
 export interface IDevisRepository {
-  findById(id: string): Devis | undefined;
-  list(filters: DevisFilters): PaginatedResult<Devis>;
-  create(input: CreateDevisInput): Devis;
-  update(id: string, patch: Partial<Devis>, expectedVersion?: number): Devis;
-  softDelete(id: string): void;
-  findByIdempotencyKey(key: string): Devis | undefined;
-  storeIdempotencyKey(key: string, devisId: string): void;
+  findById(id: string): Promise<Devis | undefined> | Devis | undefined;
+  list(filters: DevisFilters): Promise<PaginatedResult<Devis>> | PaginatedResult<Devis>;
+  create(input: CreateDevisInput): Promise<Devis> | Devis;
+  update(id: string, patch: Partial<Devis>, expectedVersion?: number): Promise<Devis> | Devis;
+  softDelete(id: string): Promise<void> | void;
+  findByIdempotencyKey(key: string): Promise<Devis | undefined> | Devis | undefined;
+  storeIdempotencyKey(key: string, devisId: string): Promise<void> | void;
 }
 
 class MemoryDevisRepository implements IDevisRepository {
@@ -56,12 +59,18 @@ class MemoryDevisRepository implements IDevisRepository {
   }
 
   findById(id: string): Devis | undefined {
+    if (config.isProduction) {
+      throw new Error('[KONSTRIVO] Devis repository: in-memory repository is not allowed in production. Implement Drizzle/Postgres repository.');
+    }
     const d = this.map.get(id);
     if (!d || (d as Devis).isDeleted) return undefined;
     return d as Devis;
   }
 
   list(filters: DevisFilters): PaginatedResult<Devis> {
+    if (config.isProduction) {
+      throw new Error('[KONSTRIVO] Devis repository: in-memory repository is not allowed in production. Implement Drizzle/Postgres repository.');
+    }
     const all = Array.from(this.map.values()) as Devis[];
     let filtered = all.filter(d => !d.isDeleted && d.companyId === filters.companyId);
     if (filters.status) filtered = filtered.filter(d => d.status === filters.status);
@@ -95,6 +104,9 @@ class MemoryDevisRepository implements IDevisRepository {
   }
 
   create(input: CreateDevisInput): Devis {
+    if (config.isProduction) {
+      throw new Error('[KONSTRIVO] Devis repository: in-memory repository is not allowed in production. Implement Drizzle/Postgres repository.');
+    }
     const now = new Date().toISOString();
     const devisId = generateId();
     const devisNumber = this.generateDevisNumber();
@@ -175,6 +187,9 @@ class MemoryDevisRepository implements IDevisRepository {
   }
 
   update(id: string, patch: Partial<Devis>, expectedVersion?: number): Devis {
+    if (config.isProduction) {
+      throw new Error('[KONSTRIVO] Devis repository: in-memory repository is not allowed in production. Implement Drizzle/Postgres repository.');
+    }
     const existing = this.map.get(id) as Devis;
     if (!existing) throw new Error('Devis not found');
     if (existing.isDeleted) throw new Error('Devis is deleted');
@@ -194,6 +209,9 @@ class MemoryDevisRepository implements IDevisRepository {
 
   /** SOFT DELETE ONLY - never physically removes the record in Phase 2. */
   softDelete(id: string): void {
+    if (config.isProduction) {
+      throw new Error('[KONSTRIVO] Devis repository: in-memory repository is not allowed in production. Implement Drizzle/Postgres repository.');
+    }
     const existing = this.map.get(id) as Devis;
     if (!existing) return;
     existing.isDeleted = true;
@@ -205,6 +223,9 @@ class MemoryDevisRepository implements IDevisRepository {
   }
 
   findByIdempotencyKey(key: string): Devis | undefined {
+    if (config.isProduction) {
+      throw new Error('[KONSTRIVO] Devis repository: in-memory repository is not allowed in production. Implement Drizzle/Postgres repository.');
+    }
     const devisId = this.idemMap.get(key);
     if (!devisId) return undefined;
     const devis = this.map.get(devisId as string) as Devis | undefined;
@@ -217,5 +238,15 @@ class MemoryDevisRepository implements IDevisRepository {
     memoryStore.saveCollection(COLLECTION_IDEM);
   }
 }
+class HybridDevisRepository implements IDevisRepository {
+  private memory = new MemoryDevisRepository();
+  async findById(id: string) { if (await isDatabaseAvailable()) return await drizzleRepo.findDevisById(id); return this.memory.findById(id); }
+  async list(filters: DevisFilters) { if (await isDatabaseAvailable()) return await drizzleRepo.listDevis(filters); return this.memory.list(filters); }
+  async create(input: CreateDevisInput) { if (await isDatabaseAvailable()) return await drizzleRepo.createDevis(input); return this.memory.create(input); }
+  async update(id: string, patch: Partial<Devis>, expectedVersion?: number) { if (await isDatabaseAvailable()) return await drizzleRepo.updateDevis(id, patch, expectedVersion); return this.memory.update(id, patch, expectedVersion); }
+  async softDelete(id: string) { if (await isDatabaseAvailable()) return await drizzleRepo.softDeleteDevis(id); return this.memory.softDelete(id); }
+  async findByIdempotencyKey(key: string) { if (await isDatabaseAvailable()) return await drizzleRepo.findDevisByIdempotencyKey(key); return this.memory.findByIdempotencyKey(key); }
+  async storeIdempotencyKey(key: string, devisId: string) { if (await isDatabaseAvailable()) return await drizzleRepo.storeIdempotencyKey(key, devisId); return this.memory.storeIdempotencyKey(key, devisId); }
+}
 
-export const devisRepository: IDevisRepository = new MemoryDevisRepository();
+export const devisRepository: IDevisRepository = new HybridDevisRepository();

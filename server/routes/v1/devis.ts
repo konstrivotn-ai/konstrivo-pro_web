@@ -39,10 +39,10 @@ const IDEMPOTENCY_HEADER = 'idempotency-key';
 
 // ── GET / ─────────────────────────────────────────────────────────────────
 
-router.get('/', (req: AuthenticatedRequest, res: Response, next) => {
+router.get('/', async (req: AuthenticatedRequest, res: Response, next) => {
   try {
     const companyId = requireCompany(req);
-    const result = devisRepository.list({
+    const result = await (devisRepository as any).list({
       companyId,
       status: req.query.status as string | undefined,
       search: req.query.search as string | undefined,
@@ -57,14 +57,14 @@ router.get('/', (req: AuthenticatedRequest, res: Response, next) => {
 
 router.post('/',
   requireEntitlement('DEVIS_CREATE_BASIC'),
-  (req: AuthenticatedRequest, res: Response, next) => {
+  async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const companyId = requireCompany(req);
 
       // Idempotency
       const idempotencyKey = req.headers[IDEMPOTENCY_HEADER] as string | undefined;
       if (idempotencyKey) {
-        const existing = devisRepository.findByIdempotencyKey(idempotencyKey);
+        const existing = await (devisRepository as any).findByIdempotencyKey(idempotencyKey);
         if (existing) {
           return res.status(200).json({ data: existing, idempotentReplay: true });
         }
@@ -83,7 +83,7 @@ router.post('/',
         }
       }
 
-      const devis = devisRepository.create({
+      const devis = await (devisRepository as any).create({
         companyId,
         createdByUserId: req.user!.uid,
         clientName: body.clientName,
@@ -99,10 +99,11 @@ router.post('/',
         retenueGarantiePercent: body.retenueGarantiePercent,
         discount: body.discount,
         status: body.status,
+        idempotencyKey,
       });
 
       if (idempotencyKey) {
-        devisRepository.storeIdempotencyKey(idempotencyKey, devis.id);
+        await (devisRepository as any).storeIdempotencyKey(idempotencyKey, devis.id);
       }
 
       res.status(201).json({ data: devis });
@@ -112,9 +113,9 @@ router.post('/',
 
 // ── GET /:id ──────────────────────────────────────────────────────────────
 
-router.get('/:id', (req: AuthenticatedRequest, res: Response, next) => {
+router.get('/:id', async (req: AuthenticatedRequest, res: Response, next) => {
   try {
-    const devis = devisRepository.findById(req.params.id);
+    const devis = await (devisRepository as any).findById(req.params.id);
     if (!devis) throw notFound(`Devis '${req.params.id}' not found`);
     assertOwnership(req, devis.companyId);
     res.json({ data: devis });
@@ -124,9 +125,9 @@ router.get('/:id', (req: AuthenticatedRequest, res: Response, next) => {
 // ── PUT /:id ──────────────────────────────────────────────────────────────
 // Optimistic version check: if client sends an outdated version → 409.
 
-router.put('/:id', (req: AuthenticatedRequest, res: Response, next) => {
+router.put('/:id', async (req: AuthenticatedRequest, res: Response, next) => {
   try {
-    const existing = devisRepository.findById(req.params.id);
+    const existing = await (devisRepository as any).findById(req.params.id);
     if (!existing) throw notFound(`Devis '${req.params.id}' not found`);
     assertOwnership(req, existing.companyId);
 
@@ -150,7 +151,7 @@ router.put('/:id', (req: AuthenticatedRequest, res: Response, next) => {
     patch.version = expectedVersion;
 
     try {
-      const updated = devisRepository.update(req.params.id, patch, Number(expectedVersion));
+      const updated = await (devisRepository as any).update(req.params.id, patch, Number(expectedVersion));
       res.json({ data: updated });
     } catch (updateErr: any) {
       if (updateErr?.statusCode === 409) {
@@ -164,13 +165,13 @@ router.put('/:id', (req: AuthenticatedRequest, res: Response, next) => {
 // ── DELETE /:id ───────────────────────────────────────────────────────────
 // SOFT DELETE ONLY.
 
-router.delete('/:id', (req: AuthenticatedRequest, res: Response, next) => {
+router.delete('/:id', async (req: AuthenticatedRequest, res: Response, next) => {
   try {
-    const existing = devisRepository.findById(req.params.id);
+    const existing = await (devisRepository as any).findById(req.params.id);
     if (!existing) throw notFound(`Devis '${req.params.id}' not found`);
     assertOwnership(req, existing.companyId);
 
-    devisRepository.softDelete(req.params.id);
+    await (devisRepository as any).softDelete(req.params.id);
     res.status(204).send();
   } catch (err) { next(err); }
 });

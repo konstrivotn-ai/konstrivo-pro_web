@@ -10,6 +10,7 @@ import { pricesRouter } from './prices';
 import { devisRouter } from './devis';
 import { suppliersRouter } from './suppliers';
 import { artisansRouter } from './artisans';
+import { projectsRouter } from './projects';
 import { subscriptionsRouter } from './subscriptions';
 import { syncRouter } from './sync';
 import { errorHandler } from '../../middleware/errorHandler';
@@ -46,6 +47,8 @@ export function setupV1Router(): Router {
         'GET    /api/v1/suppliers/imports/:id',
         'POST   /api/v1/suppliers/imports/:id/approve',
         'GET    /api/v1/artisans',
+        'GET    /api/v1/projects',
+        'GET    /api/v1/projects/:id',
         'GET    /api/v1/artisans/:id',
         'GET    /api/v1/subscriptions/me',
         'POST   /api/v1/sync/pull',
@@ -62,6 +65,7 @@ export function setupV1Router(): Router {
   router.use('/devis', devisRouter);
   router.use('/suppliers', suppliersRouter);
   router.use('/artisans', artisansRouter);
+  router.use('/projects', projectsRouter);
   router.use('/subscriptions', subscriptionsRouter);
   router.use('/sync', syncRouter);
 

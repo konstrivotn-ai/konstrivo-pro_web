@@ -21,9 +21,9 @@ function publicArtisan(a: any) {
   return pub;
 }
 
-router.get('/', (req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
-    const result = artisanRepository.list({
+    const result = await (artisanRepository as any).list({
       trade: req.query.trade as string | undefined,
       governorate: req.query.governorate as string | undefined,
       pro: req.query.pro === 'true' ? true : req.query.pro === 'false' ? false : undefined,
@@ -35,9 +35,9 @@ router.get('/', (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get('/:id', (req, res, next) => {
+router.get('/:id', async (req, res, next) => {
   try {
-    const artisan = artisanRepository.findById(req.params.id);
+    const artisan = await (artisanRepository as any).findById(req.params.id);
     if (!artisan) throw notFound(`Artisan '${req.params.id}' not found`);
     res.json({ data: publicArtisan(artisan) });
   } catch (err) { next(err); }

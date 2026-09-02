@@ -129,7 +129,14 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({
     }
   ];
 
-  const filteredProjectsList = showcaseProjects.filter((p) => {
+  const isProd = !!((import.meta as any).env && (import.meta as any).env.PROD);
+
+  // Use real user projects when available. In non-production fall back to local showcase demo.
+  const baseProjects = (projects && projects.length > 0)
+    ? projects
+    : (isProd ? [] : showcaseProjects);
+
+  const filteredProjectsList = baseProjects.filter((p) => {
     const matchQuery = searchQuery === '' || p.title.toLowerCase().includes(searchQuery.toLowerCase()) || p.description.toLowerCase().includes(searchQuery.toLowerCase());
     const matchCategory = categoryFilter === 'all' || p.category.toLowerCase() === categoryFilter.toLowerCase();
     const matchRegion = regionFilter === 'all' || p.location.toLowerCase().includes(regionFilter.toLowerCase());
@@ -140,7 +147,7 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({
     e.preventDefault();
     if (!newTitle.trim()) return;
 
-    showcaseProjects.unshift({
+    const newProj = {
       id: `proj-${Date.now()}`,
       title: newTitle,
       category: newCategory,
@@ -154,7 +161,19 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({
       services: [newCategory, 'Métré Pro', 'Finitions'],
       budget: 'Sur devis',
       status: 'Terminé'
-    });
+    } as any;
+
+    if (onUpdateProjects) {
+      try {
+        onUpdateProjects([newProj, ...(projects || [])]);
+      } catch (e) {
+        // fallback for dev: mutate showcaseProjects
+        showcaseProjects.unshift(newProj);
+      }
+    } else {
+      // dev fallback
+      showcaseProjects.unshift(newProj);
+    }
 
     setShowPublishModal(false);
     setNewTitle('');
@@ -350,8 +369,8 @@ export const ProjectsTab: React.FC<ProjectsTabProps> = ({
             </div>
 
             <div>
-              <button
-                onClick={() => setSelectedModalProject(showcaseProjects[0])}
+                <button
+                onClick={() => setSelectedModalProject(baseProjects[0] || null)}
                 className="px-6 py-3 bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 font-bold text-xs rounded-2xl shadow-lg shadow-amber-500/20 transition-all flex items-center gap-2 cursor-pointer"
               >
                 <span>Voir le projet</span>

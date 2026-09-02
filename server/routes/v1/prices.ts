@@ -17,11 +17,11 @@ const router = Router();
 
 // ── GET / ─────────────────────────────────────────────────────────────────
 
-router.get('/', (req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
     const page = parseIntParam(req.query.page, 1);
     const limit = parseIntParam(req.query.limit, 20);
-    const result = priceRepository.list({
+    const result = await (priceRepository as any).list({
       materialId: req.query.materialId as string | undefined,
       currency: req.query.currency as string | undefined,
       source: req.query.source as any,
@@ -36,8 +36,11 @@ router.get('/', (req, res, next) => {
 
 // ── GET /sources ──────────────────────────────────────────────────────────
 
-router.get('/sources', (_req, res) => {
-  res.json({ data: priceRepository.getPriceSources() });
+router.get('/sources', async (_req, res, next) => {
+  try {
+    const sources = await (priceRepository as any).getPriceSources();
+    res.json({ data: sources });
+  } catch (err) { next(err); }
 });
 
 // ── POST /custom ──────────────────────────────────────────────────────────
@@ -50,12 +53,12 @@ router.post('/custom',
     { field: 'materialId', label: 'Material ID', required: true, type: 'string' },
     { field: 'price', label: 'Price', required: true, type: 'number', min: 0 },
   ]),
-  (req: AuthenticatedRequest, res: Response, next) => {
+  async (req: AuthenticatedRequest, res: Response, next) => {
     try {
       const { materialId, price, currency, market, notes, effectiveFrom } = req.body || {};
 
       // Verify the material exists
-      const material = materialRepository.findById(materialId);
+      const material = await (materialRepository as any).findById(materialId);
       if (!material) throw notFound(`Material '${materialId}' not found`);
 
       // Company isolation: custom prices belong to the user's company
@@ -64,7 +67,7 @@ router.post('/custom',
 
       if (price < 0) throw badRequest('Price must be >= 0');
 
-      const newPrice = priceRepository.create({
+      const newPrice = await (priceRepository as any).create({
         materialId,
         price: roundMoney(price),
         currency: currency || 'TND',

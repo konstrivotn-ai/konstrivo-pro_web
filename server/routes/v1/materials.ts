@@ -18,11 +18,11 @@ router.use(optionalAuth);
 
 // ── GET / ─────────────────────────────────────────────────────────────────
 
-router.get('/', (req, res, next) => {
+router.get('/', async (req, res, next) => {
   try {
     const page = parseIntParam(req.query.page, 1);
     const limit = parseIntParam(req.query.limit, 20);
-    const result = materialRepository.list({
+    const result = await (materialRepository as any).list({
       trade: req.query.trade as string | undefined,
       category: req.query.category as string | undefined,
       search: req.query.search as string | undefined,
@@ -35,9 +35,9 @@ router.get('/', (req, res, next) => {
 
 // ── GET /:id ──────────────────────────────────────────────────────────────
 
-router.get('/:id', (req, res, next) => {
+router.get('/:id', async (req, res, next) => {
   try {
-    const material = materialRepository.findById(req.params.id);
+    const material = await (materialRepository as any).findById(req.params.id);
     if (!material) throw notFound(`Material '${req.params.id}' not found`);
     res.json({ data: material });
   } catch (err) { next(err); }

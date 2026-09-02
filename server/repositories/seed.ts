@@ -7,6 +7,7 @@
  */
 import { DEFAULT_MARKET_RATES } from '../../src/data/marketRates';
 import { INITIAL_ARTISANS, INITIAL_MARKETPLACE_PRODUCTS } from '../../src/data/mockSaaSData';
+import { config } from '../config';
 import { Material, MaterialPrice, PriceSourceDef, ArtisanProfile } from '../types';
 import { generateId } from '../utils/crypto';
 
@@ -25,6 +26,11 @@ export const PRICE_SOURCES: PriceSourceDef[] = [
  * Material identity and pricing are kept separate.
  */
 export function buildMaterialsFromRates(): { materials: Material[]; prices: MaterialPrice[] } {
+  // In production we must NOT seed materials/prices from frontend defaults.
+  // Return empty arrays so that production relies on PostgreSQL canonical data.
+  if (config.isProduction) {
+    return { materials: [], prices: [] };
+  }
   const materials: Material[] = [];
   const prices: MaterialPrice[] = [];
   const timestamp = now();
@@ -78,6 +84,8 @@ export function buildMaterialsFromRates(): { materials: Material[]; prices: Mate
  * Strips private user info (email, etc.) for public API exposure.
  */
 export function buildArtisansFromMock(): ArtisanProfile[] {
+  // Do not expose mocked artisans in production — return empty.
+  if (config.isProduction) return [];
   const timestamp = now();
   return INITIAL_ARTISANS.map(a => ({
     id: a.id,
