@@ -61,7 +61,7 @@ export const ContactTab: React.FC<ContactTabProps> = ({ lang }) => {
           </h1>
 
           <p className="text-sm sm:text-base text-slate-300 leading-relaxed">
-            Une question sur un calcul de métré, une intégration de barème fournisseur ou un problème sur votre chantier ? Notre équipe vous répond sous 15 minutes pendant les heures ouvrables.
+            Une question sur un calcul de métré, une intégration de barème fournisseur ou un problème sur votre chantier ? Notre équipe vous répond pendant les heures ouvrables.
           </p>
 
           <div className="flex flex-wrap gap-3 pt-2">
@@ -214,7 +214,7 @@ export const ContactTab: React.FC<ContactTabProps> = ({ lang }) => {
 
               <p className="text-xs text-slate-300 flex items-start gap-2 mb-2">
                 <MapPin className="w-3.5 h-3.5 text-amber-400 mt-0.5 flex-shrink-0" />
-                <span>Tunis (Centre Urbain Nord)</span>
+                <span>Tunisie — Support à distance</span>
               </p>
 
               <p className="text-xs text-slate-400 flex items-center gap-2 mb-2">
