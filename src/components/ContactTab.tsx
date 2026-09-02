@@ -20,29 +20,9 @@ export const ContactTab: React.FC<ContactTabProps> = ({ lang }) => {
 
   const [submitted, setSubmitted] = useState(false);
 
-  const offices = [
-    {
-      city: 'Grand Tunis (Siège Central)',
-      address: 'Immeuble BTP Tech, Centre Urbain Nord, 1082 Tunis',
-      phone: '+216 71 889 900',
-      hours: 'Lun - Sam : 08h00 - 18h00',
-      isHQ: true
-    },
-    {
-      city: 'Sahel (Sousse / Monastir)',
-      address: 'Avenue Léopold Senghor, Sousse Médina',
-      phone: '+216 73 221 400',
-      hours: 'Lun - Ven : 08h00 - 17h00',
-      isHQ: false
-    },
-    {
-      city: 'Sfax (Pôle Sud & Industriel)',
-      address: 'Route de Téniour Km 2, Sfax 3002',
-      phone: '+216 74 445 100',
-      hours: 'Lun - Ven : 08h00 - 17h00',
-      isHQ: false
-    }
-  ];
+  // The detailed office list has been removed from this component to avoid
+  // presenting unverified contact locations. The page preserves the layout
+  // and provides official contact channels (WhatsApp + email) only.
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,13 +72,6 @@ export const ContactTab: React.FC<ContactTabProps> = ({ lang }) => {
               <MessageSquare className="w-4 h-4" />
               <span>Assistance Directe WhatsApp : +216 50 772 371</span>
             </button>
-            <a
-              href="tel:+21671889900"
-              className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 transition-all flex items-center gap-2"
-            >
-              <Phone className="w-4 h-4 text-amber-400" />
-              <span>Standard Téléphonique : +216 71 889 900</span>
-            </a>
           </div>
         </div>
       </div>
@@ -228,48 +201,37 @@ export const ContactTab: React.FC<ContactTabProps> = ({ lang }) => {
           <div className="flex items-center justify-between">
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <Building2 className="w-4 h-4 text-amber-400" />
-              Nos Agences & Bureaux Techniques
+              Contact & Support
             </h3>
             <span className="text-xs text-emerald-400 font-semibold">Tunisie 2026</span>
           </div>
 
           <div className="space-y-3">
-            {offices.map((of, idx) => (
-              <div
-                key={idx}
-                className={`p-5 rounded-2xl border transition-all ${
-                  of.isHQ
-                    ? 'bg-gradient-to-br from-amber-500/10 to-slate-900/60 border-amber-500/30'
-                    : 'bg-slate-900/50 border-slate-800/80'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <h4 className="text-sm font-bold text-white flex items-center gap-1.5">
-                    {of.city}
-                    {of.isHQ && (
-                      <span className="px-2 py-0.5 text-[9px] font-black uppercase bg-amber-500 text-slate-950 rounded-full">
-                        HQ Central
-                      </span>
-                    )}
-                  </h4>
-                </div>
-
-                <p className="text-xs text-slate-300 flex items-start gap-2 mb-2">
-                  <MapPin className="w-3.5 h-3.5 text-amber-400 mt-0.5 flex-shrink-0" />
-                  <span>{of.address}</span>
-                </p>
-
-                <p className="text-xs text-slate-400 flex items-center gap-2 mb-2">
-                  <Phone className="w-3.5 h-3.5 text-slate-500" />
-                  <span className="font-mono text-white">{of.phone}</span>
-                </p>
-
-                <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
-                  <Clock className="w-3 h-3" />
-                  <span>{of.hours}</span>
-                </p>
+            <div className="p-5 rounded-2xl border bg-gradient-to-br from-amber-500/10 to-slate-900/60 border-amber-500/30">
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-bold text-white flex items-center gap-1.5">Canaux Officiels</h4>
               </div>
-            ))}
+
+              <p className="text-xs text-slate-300 flex items-start gap-2 mb-2">
+                <MapPin className="w-3.5 h-3.5 text-amber-400 mt-0.5 flex-shrink-0" />
+                <span>Tunis (Centre Urbain Nord)</span>
+              </p>
+
+              <p className="text-xs text-slate-400 flex items-center gap-2 mb-2">
+                <Phone className="w-3.5 h-3.5 text-slate-500" />
+                <span className="font-mono text-white">WhatsApp : +216 50 772 371</span>
+              </p>
+
+              <p className="text-xs text-slate-400 flex items-center gap-2 mb-2">
+                <Mail className="w-3.5 h-3.5 text-amber-400" />
+                <span className="font-mono text-white">konstrivo.tn@gmail.com</span>
+              </p>
+
+              <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                <Clock className="w-3 h-3" />
+                <span>Support via WhatsApp et formulaire — disponibilité en heures ouvrables</span>
+              </p>
+            </div>
           </div>
 
           {/* Quick SLA Commitment */}
