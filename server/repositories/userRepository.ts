@@ -148,7 +148,7 @@ class HybridUserRepository implements IUserRepository {
   async update(id: string, patch: Partial<User>): Promise<User> {
     await this.init();
     if (this.usePostgres) {
-      throw new Error('update not implemented in Drizzle repository');
+      return drizzleUserRepository.update(id, patch);
     }
     return this.memoryRepo.update(id, patch);
   }

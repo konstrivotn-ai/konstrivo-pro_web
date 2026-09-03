@@ -64,7 +64,13 @@ async function main() {
   console.log('═══════════════════════════════════════════\n');
 
   const { runAuthTests } = await import('./auth.test');
+  const { runTestDatabaseConfigTests } = await import('./test_database_config.test');
+  const { runPasswordResetRepositoryTests } = await import('./password_reset_repository.test');
+  const { runPasswordResetServiceTests } = await import('./password_reset_service.test');
+  const { runDrizzleUserUpdateTests } = await import('./drizzle_user_update.test');
   const { runBootstrapTests } = await import('./bootstrap.test');
+  const { runApiAuthForgotResetTests } = await import('./api_auth_forgot_reset.test');
+  const { runResetPasswordPageTests } = await import('./reset_password_page.test');
   const { runMaterialPriceTests } = await import('./materials.test');
   const { runDevisTests } = await import('./devis.test');
   const { runSupplierTests } = await import('./suppliers.test');
@@ -76,6 +82,12 @@ async function main() {
   const { runSecurityHeadersTests } = await import('./security_headers.test');
 
   await runBootstrapTests();
+  await runTestDatabaseConfigTests();
+  await runPasswordResetRepositoryTests();
+  await runPasswordResetServiceTests();
+  await runDrizzleUserUpdateTests();
+  await runApiAuthForgotResetTests();
+  await runResetPasswordPageTests();
   await runAuthTests();
   await runMaterialPriceTests();
   await runDevisTests();

@@ -6,3 +6,4 @@ export * from './identity';
 export * from './catalog';
 export * from './devis';
 export * from './operations';
+export * from './password_reset_tokens';

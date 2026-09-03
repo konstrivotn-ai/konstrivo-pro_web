@@ -64,7 +64,20 @@ export default function App() {
 
   const [isOffline, setIsOffline] = useState<boolean>(false);
   const [showSyncModal, setShowSyncModal] = useState<boolean>(false);
-  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(() => {
+    // AUTH PHASE 2A STEP 5 — after a successful password reset the user is
+    // sent back to the app with ?connexion=1 so the EXISTING login modal
+    // (AuthModal, default login mode) opens automatically. The flag is
+    // stripped from the URL; no token is ever part of any URL.
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('connexion') === '1') {
+        window.history.replaceState(null, '', window.location.pathname);
+        return true;
+      }
+    } catch { /* ignore */ }
+    return false;
+  });
   const [showCatalogModal, setShowCatalogModal] = useState<boolean>(false);
   const [showWizardModal, setShowWizardModal] = useState<boolean>(false);
   const [showSupplierModal, setShowSupplierModal] = useState<boolean>(false);

@@ -13,11 +13,13 @@ import { hashPassword, comparePassword, signJWT, verifyJWT, decodeJWT } from '..
 import { computeEntitlements, ROLE_DEFAULT_TIER } from '../../utils/permissions';
 import { authenticate, AuthenticatedRequest } from '../../middleware/auth';
 import { validateBody, isValidEmail, isValidPassword } from '../../utils/validation';
+import { passwordResetService } from '../../services/passwordResetService';
+import { sendPasswordResetEmail } from '../../utils/email';
 import {
   badRequest, unauthorized, conflict, forbidden, validationError,
 } from '../../utils/errors';
 import { User, Company, UserRole, UserTier } from '../../types';
-import { config } from '../../config';
+import { config, getPublicAppUrl, isProduction } from '../../config';
 import { setRefreshCookie, clearRefreshCookie, getCookie, REFRESH_COOKIE_NAME } from '../../utils/cookies';
 import { createLimiter } from '../../middleware/rateLimit';
 
@@ -187,6 +189,106 @@ router.post('/refresh', createLimiter('refresh'), async (req, res, next) => {
 router.post('/logout', (_req, res) => {
   clearRefreshCookie(res);
   res.json({ ok: true });
+});
+
+/**
+ * Build a password-reset URL from the validated server-side `PUBLIC_APP_URL`.
+ *
+ * SECURITY:
+ * - Only `getPublicAppUrl()` (server config) is used for the configured value.
+ *   It is never read from any HTTP input (body/query/header/cookie) or from
+ *   the frontend.
+ * - In production `PUBLIC_APP_URL` is REQUIRED and must be an absolute http(s)
+ *   URL with a non-loopback host. If it is missing, invalid, or loopback this
+ *   returns `undefined`: the route then skips the email entirely while keeping
+ *   the generic response — no config details ever reach the client. There is
+ *   NO localhost fallback in production.
+ * - In development/test an unset value may fall back to the local dev URL, but
+ *   a set-but-invalid value still disables the email (no invalid link sent).
+ * - The raw token only ever appears inside this returned URL (and in the email
+ *   built from it). It is never logged and never returned in JSON or error
+ *   responses.
+ */
+function buildResetUrl(token: string): string | undefined {
+  const isProd = isProduction();
+  const configPublicUrl = getPublicAppUrl();
+  const base = isProd
+    ? configPublicUrl
+    : (process.env.PUBLIC_APP_URL ? configPublicUrl : 'http://localhost:5173');
+  if (!base) return undefined;
+
+  try {
+    const u = new URL(base);
+    if (!['http:', 'https:'].includes(u.protocol)) return undefined;
+    if (!u.hostname) return undefined;
+
+    if (isProd) {
+      // Never emit localhost/loopback reset links in production.
+      if (u.hostname === 'localhost' || u.hostname === '0.0.0.0' || u.hostname === '::1' || /^127\./.test(u.hostname)) {
+        return undefined;
+      }
+    }
+
+    return `${base}/reset-password?token=${encodeURIComponent(token)}`;
+  } catch {
+    return undefined;
+  }
+}
+
+// ── POST /forgot ───────────────────────────────────────────────────────────
+router.post('/forgot', createLimiter('login'), validateBody([
+  { field: 'email', label: 'Email', required: true, type: 'string', max: 254 },
+]), async (req, res, next) => {
+  try {
+    const { email } = req.body || {};
+    if (!isValidEmail(email)) throw validationError('Invalid email');
+    const normalized = email.toLowerCase().trim();
+
+    // Request a reset token. The raw token is returned to THIS server-side
+    // caller only (never to HTTP clients) so the reset URL can be built and
+    // emailed. The `returnRawTokenToCaller` flag is hard-coded in server code;
+    // it is NOT read from the request body, query, headers, cookies, frontend,
+    // or any user-controlled environment variable, so HTTP clients can never
+    // trigger or disable raw-token exposure.
+    const maybe = await passwordResetService.requestPasswordReset(normalized, { returnRawTokenToCaller: true }) as any;
+
+    // Only email the user if the account exists and we have a raw token. The
+    // reset URL is built from a validated server-side `PUBLIC_APP_URL`; if that
+    // is unavailable (e.g. unset/invalid in production) we silently skip the
+    // email while preserving the generic response.
+    const user = await userRepository.findByEmail(normalized);
+    if (user && maybe && maybe.token) {
+      const resetUrl = buildResetUrl(maybe.token);
+      // Never log the raw token or the reset URL. Delivery errors are swallowed
+      // so the response stays generic and account existence is not revealed.
+      if (resetUrl) {
+        try { await sendPasswordResetEmail(user.email, resetUrl); } catch { /* swallow */ }
+      }
+    }
+
+    res.json({ ok: true, message: 'Si cette adresse existe, un lien de réinitialisation sera envoyé.' });
+  } catch (err) { next(err); }
+});
+
+// ── POST /reset ────────────────────────────────────────────────────────────
+router.post('/reset', createLimiter('login'), validateBody([
+  { field: 'token', label: 'Token', required: true, type: 'string', min: 1 },
+  { field: 'password', label: 'Password', required: true, type: 'string', min: 8 },
+]), async (req, res, next) => {
+  try {
+    const { token, password } = req.body || {};
+    if (!token || typeof token !== 'string' || !password || !isValidPassword(password)) {
+      throw validationError('Invalid input');
+    }
+
+    try {
+      await passwordResetService.resetPassword(token, password);
+      res.json({ ok: true, message: 'Mot de passe réinitialisé avec succès.' });
+    } catch (err: any) {
+      // Do not leak details about why the token failed
+      return next(badRequest('Le lien de réinitialisation est invalide ou a expiré.'));
+    }
+  } catch (err) { next(err); }
 });
 
 // ── GET /users/me ─────────────────────────────────────────────────────────

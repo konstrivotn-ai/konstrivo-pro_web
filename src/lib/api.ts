@@ -172,6 +172,33 @@ export async function register(input: RegisterInput): Promise<UserProfile> {
 }
 
 /**
+ * Reset the password using the one-time token from the reset email link
+ * (POST /api/v1/auth/reset).
+ *
+ * Sends ONLY { token, password } — the "confirm password" field never leaves
+ * the UI. On failure throws an Error with the HTTP `status` attached so the
+ * UI can map it to a safe French message (raw payloads are never surfaced,
+ * and the token never appears in any error text).
+ */
+export async function resetPassword(token: string, password: string): Promise<void> {
+  const res = await apiFetch(`${BASE}/auth/reset`, {
+    method: 'POST',
+    body: JSON.stringify({ token, password }),
+  });
+  if (res.ok) return;
+  let message = '';
+  try {
+    const err = await res.json().catch(() => ({}));
+    message = (err as any)?.error?.message || '';
+  } catch {
+    /* ignore parse errors — the UI never surfaces raw payloads */
+  }
+  const error: any = new Error(message);
+  error.status = res.status;
+  throw error;
+}
+
+/**
  * Restore a session on page load using the HttpOnly refresh cookie.
  * Returns the server-validated profile (or null when not authenticated).
  */

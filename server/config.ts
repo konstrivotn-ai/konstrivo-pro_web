@@ -24,6 +24,9 @@ export interface ServerConfig {
   allowedUploadMime: Set<string>;
   // Database (Phase 3)
   databaseUrl: string | undefined;
+  testDatabaseUrl: string | undefined;
+  // Public app URL used to build password-reset links.
+  publicAppUrl: string | undefined;
   // Rate limiting (basic)
   rateLimitMax: number;
   rateLimitWindowMs: number;
@@ -55,14 +58,30 @@ export function loadConfig(): ServerConfig {
   }
 
   const databaseUrl = process.env.DATABASE_URL || undefined;
-  // In production we require a configured DATABASE_URL; refuse to run in
-  // memory/mock mode to avoid accidentally exposing seeded demo data.
-  if (process.env.NODE_ENV === 'production' && !databaseUrl) {
-    throw new Error('[KONSTRIVO] FATAL: DATABASE_URL must be configured in production. Refusing to start in memory mode.');
+  const testDatabaseUrl = process.env.TEST_DATABASE_URL || undefined;
+
+  if (process.env.NODE_ENV === 'production') {
+    // In production we require a configured DATABASE_URL; refuse to run in
+    // memory/mock mode to avoid accidentally exposing seeded demo data.
+    if (!databaseUrl) {
+      throw new Error('[KONSTRIVO] FATAL: DATABASE_URL must be configured in production. Refusing to start in memory mode.');
+    }
   }
+
+  if (process.env.NODE_ENV === 'test') {
+    if (!testDatabaseUrl) {
+      throw new Error('[KONSTRIVO-TEST] TEST_DATABASE_URL is required for PostgreSQL integration tests.');
+    }
+    if (databaseUrl && testDatabaseUrl === databaseUrl) {
+      throw new Error('[KONSTRIVO-TEST] TEST_DATABASE_URL must be different from DATABASE_URL.');
+    }
+  }
+
   if (databaseUrl && process.env.NODE_ENV === 'development') {
     console.log('[KONSTRIVO] DATABASE_URL detected — PostgreSQL mode enabled.');
   }
+
+  const effectiveDatabaseUrl = process.env.NODE_ENV === 'test' ? testDatabaseUrl : databaseUrl;
 
   return {
     port: parseInt(process.env.PORT || '3000', 10),
@@ -76,13 +95,52 @@ export function loadConfig(): ServerConfig {
     scryptN: 16384,
     maxUploadBytes: parseInt(process.env.MAX_UPLOAD_BYTES || String(5 * 1024 * 1024), 10), // 5 MB
     allowedUploadMime: new Set(['text/csv', 'application/csv', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']),
-    databaseUrl,
+    databaseUrl: effectiveDatabaseUrl,
+    testDatabaseUrl,
+    publicAppUrl: getPublicAppUrl(),
     rateLimitMax: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
     rateLimitWindowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10),
   };
 }
 
 export const config: ServerConfig = loadConfig();
+
+/**
+ * Returns true only when NODE_ENV === 'production'. Read at call time (not
+ * cached) so behaviour always reflects the *current* environment, including
+ * during tests that simulate production.
+ */
+export function isProduction(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
+
+/**
+ * Returns the validated public application URL (trailing slashes stripped)
+ * used to build password-reset links, or `undefined` when it is unset or
+ * invalid.
+ *
+ * SECURITY:
+ * - The value is read from the server environment ONLY; it is never taken from
+ *   any HTTP input (body/query/header/cookie) or from the frontend.
+ * - Only absolute http(s) URLs with a host are accepted; anything else (e.g.
+ *   `not-a-url`, `ftp://...`) returns `undefined`.
+ * - This helper NEVER falls back to localhost. Callers decide how to react to
+ *   `undefined`; in production the forgot-password route simply skips the
+ *   email so no localhost/accent reset link is ever sent.
+ */
+export function getPublicAppUrl(): string | undefined {
+  const raw = process.env.PUBLIC_APP_URL;
+  if (!raw) return undefined;
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return undefined;
+  }
+  if (!['http:', 'https:'].includes(u.protocol)) return undefined;
+  if (!u.hostname) return undefined;
+  return raw.replace(/\/+$/, '');
+}
 
 export function hasDatabase(): boolean {
   return !!config.databaseUrl;

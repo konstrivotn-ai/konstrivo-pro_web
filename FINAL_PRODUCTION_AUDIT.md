@@ -391,7 +391,7 @@ if (config.isProduction && !databaseUrl) {
 ```
 DATABASE_URL="postgresql://..."
 JWT_SECRET="dev_a1b2c3d4..."
-ADMIN_PASSWORD="Aminetorcida2008"
+ADMIN_PASSWORD=<set-via-environment-secret>
 ```
 
 **Production Recommendation:**

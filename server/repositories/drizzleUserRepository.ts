@@ -66,6 +66,33 @@ export class DrizzleUserRepository implements IUserRepository {
     await db.update(users).set({ deletedAt: new Date(), updatedAt: new Date() }).where(eq(users.id, id));
   }
 
+  async update(id: string, patch: Partial<User>): Promise<User> {
+    const db = await this.db();
+    const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
+    if (!result || result.length === 0) throw new Error('User not found');
+    const cur = result[0];
+
+    const setObj: any = {};
+    if (patch.email !== undefined) setObj.email = (patch.email as string).toLowerCase().trim();
+    if (patch.fullName !== undefined) setObj.fullName = patch.fullName;
+    if (patch.phone !== undefined) setObj.phone = patch.phone;
+    if (patch.passwordHash !== undefined) setObj.passwordHash = patch.passwordHash;
+    if (patch.role !== undefined) setObj.globalRole = patch.role;
+    if (patch.tier !== undefined) setObj.tier = patch.tier;
+    if (patch.status !== undefined) setObj.status = patch.status;
+    if (patch.avatarUrl !== undefined) setObj.avatarUrl = patch.avatarUrl;
+    if (patch.region !== undefined) setObj.region = patch.region;
+    if (patch.country !== undefined) setObj.country = patch.country;
+    if (patch.licenseNumber !== undefined) setObj.licenseNumber = patch.licenseNumber;
+    if (patch.matriculeFiscale !== undefined) setObj.matriculeFiscale = patch.matriculeFiscale;
+
+    setObj.updatedAt = new Date();
+    setObj.version = (cur.version || 1) + 1;
+
+    const [updated] = await db.update(users).set(setObj).where(eq(users.id, id)).returning();
+    return this.mapRowToUser(updated);
+  }
+
   private mapRowToUser(row: any): User {
     return {
       id: row.id,

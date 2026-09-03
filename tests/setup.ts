@@ -39,6 +39,19 @@ export interface TestServer {
  * independently, so it must NOT be wiped here.
  */
 async function cleanupDatabase() {
+  if (process.env.NODE_ENV !== 'test') {
+    throw new Error('[KONSTRIVO-TEST] PostgreSQL integration tests require NODE_ENV=test.');
+  }
+
+  const testDatabaseUrl = process.env.TEST_DATABASE_URL;
+  const productionDatabaseUrl = process.env.DATABASE_URL;
+  if (!testDatabaseUrl) {
+    throw new Error('[KONSTRIVO-TEST] TEST_DATABASE_URL is required for PostgreSQL integration tests.');
+  }
+  if (productionDatabaseUrl && testDatabaseUrl === productionDatabaseUrl) {
+    throw new Error('[KONSTRIVO-TEST] TEST_DATABASE_URL must be different from DATABASE_URL.');
+  }
+
   // Ensure we do NOT run destructive cleanup against non-test/production DBs.
   const db = await getDatabase();
   if (!db) return;
