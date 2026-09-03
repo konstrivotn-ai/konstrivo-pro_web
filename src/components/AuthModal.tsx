@@ -1,7 +1,7 @@
 ﻿import React, { useState } from 'react';
 import { X, User, Shield, Briefcase, Store, Compass, CheckCircle2, Lock, Mail, Phone, Building, MapPin, Sparkles, LogOut, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 import { UserProfile, UserRole, Language } from '../types';
-import { login, register } from '../lib/api';
+import { login, register, forgotPassword } from '../lib/api';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -36,6 +36,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [authError, setAuthError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
+  // AUTH PHASE 2A — "Mot de passe oublié ?" flow: ask for the email inside this
+  // modal and call the existing POST /api/v1/auth/forgot. /reset-password is
+  // opened ONLY from an email link carrying ?token=..., never from this modal.
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotLoading, setForgotLoading] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotNotice, setForgotNotice] = useState('');
+  const [forgotError, setForgotError] = useState('');
 
   if (!isOpen) return null;
 
@@ -132,6 +141,44 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           setAuthError('Échec de l\'inscription. Problème temporaire, réessayez plus tard.');
         }
       }
+    }
+  };
+
+  // AUTH PHASE 2A — open the in-modal forgot-password panel (prefilled with
+  // the email typed in the login form, if any).
+  const openForgot = () => {
+    setForgotEmail(email);
+    setForgotError('');
+    setForgotSent(false);
+    setForgotNotice('');
+    setShowForgot(true);
+  };
+
+  // Submit the forgot-password request to the EXISTING backend endpoint
+  // (POST /api/v1/auth/forgot). The answer is generic by design — the UI never
+  // reveals whether the account exists.
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (forgotLoading) return;
+    const normalized = forgotEmail.trim();
+    setForgotError('');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+      setForgotError("Format d'email invalide.");
+      return;
+    }
+    setForgotLoading(true);
+    try {
+      const notice = await forgotPassword(normalized);
+      setForgotNotice(notice);
+      setForgotSent(true);
+    } catch (err: any) {
+      setForgotError(
+        err?.status === 400 || err?.status === 422
+          ? "Format d'email invalide."
+          : 'Une erreur est survenue. Veuillez réessayer.'
+      );
+    } finally {
+      setForgotLoading(false);
     }
   };
 
@@ -324,7 +371,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <div className="flex border-b border-slate-800 mb-6">
                 <button
                   type="button"
-                  onClick={() => setMode('login')}
+                  onClick={() => { setMode('login'); setShowForgot(false); }}
                   className={`pb-3 px-4 text-sm font-bold border-b-2 transition-all cursor-pointer ${
                     mode === 'login'
                       ? 'border-amber-400 text-amber-400'
@@ -335,7 +382,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setMode('register')}
+                  onClick={() => { setMode('register'); setShowForgot(false); }}
                   className={`pb-3 px-4 text-sm font-bold border-b-2 transition-all cursor-pointer ${
                     mode === 'register'
                       ? 'border-amber-400 text-amber-400'
@@ -347,6 +394,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
 
               {/* Role Selection */}
+              {!showForgot && (
               <div className="mb-6">
                 <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2">
                   Choisissez votre Profil Métier
@@ -378,8 +426,73 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   })}
                 </div>
               </div>
+              )}
 
               {/* Form Inputs */}
+              {showForgot ? (
+                /* AUTH PHASE 2A — Forgot Password panel (asks for the email and
+                   calls the existing POST /api/v1/auth/forgot). Reuses the same
+                   design language as the login form. */
+                <form onSubmit={handleForgotSubmit} noValidate className="space-y-4">
+                  <div className="text-center">
+                    <h4 className="text-sm font-bold text-white">Mot de passe oublié ?</h4>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Saisissez votre adresse email et nous vous enverrons un lien de réinitialisation.
+                    </p>
+                  </div>
+
+                  {forgotError && (
+                    <div className="p-4 bg-red-950/60 border border-red-500/50 rounded-xl flex items-center gap-3 text-red-300">
+                      <Lock className="w-5 h-5 flex-shrink-0 text-red-400" />
+                      <span className="text-sm font-semibold">{forgotError}</span>
+                    </div>
+                  )}
+
+                  {forgotSent ? (
+                    <div className="p-4 bg-emerald-950/60 border border-emerald-500/50 rounded-xl flex items-center gap-3 text-emerald-300">
+                      <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-emerald-400" />
+                      <span className="text-sm font-semibold">{forgotNotice}</span>
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-300 mb-1">Adresse Email</label>
+                        <div className="relative">
+                          <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-3" />
+                          <input
+                            type="email"
+                            required
+                            value={forgotEmail}
+                            onChange={(e) => setForgotEmail(e.target.value)}
+                            placeholder="artisan@exemple.tn"
+                            className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white focus:border-amber-400 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={forgotLoading}
+                        aria-busy={forgotLoading}
+                        className="w-full py-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold rounded-xl shadow-lg shadow-amber-500/20 transition-all cursor-pointer flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        <Mail className="w-4 h-4" />
+                        {forgotLoading ? 'Envoi en cours…' : 'Envoyer le lien de réinitialisation'}
+                      </button>
+                    </>
+                  )}
+
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={() => setShowForgot(false)}
+                      className="text-xs text-slate-400 hover:text-amber-400 cursor-pointer bg-transparent border-0 p-0"
+                    >
+                      ← Retour à la connexion
+                    </button>
+                  </div>
+                </form>
+              ) : (
               <form onSubmit={handleSubmit} className="space-y-4">
                 {mode === 'register' && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -467,7 +580,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </div>
                   {mode === 'login' && (
                     <div className="mt-2 text-right">
-                      <a href="/reset-password" className="text-xs text-amber-400 cursor-pointer">Mot de passe oublié ?</a>
+                      <button type="button" onClick={openForgot} className="text-xs text-amber-400 hover:text-amber-300 cursor-pointer bg-transparent border-0 p-0">Mot de passe oublié ?</button>
                     </div>
                   )}
                 </div>
@@ -535,6 +648,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   {mode === 'login' ? 'Se Connecter' : 'Créer mon compte KONSTRIVO'}
                 </button>
               </form>
+              )}
             </div>
           )}
         </div>

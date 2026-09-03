@@ -199,6 +199,33 @@ export async function resetPassword(token: string, password: string): Promise<vo
 }
 
 /**
+ * Ask the backend to send a password-reset email (POST /api/v1/auth/forgot).
+ * The backend answer is intentionally generic (it never reveals whether the
+ * account exists) and the UI shows exactly that generic message. On validation
+ * failure throws an Error with the HTTP `status` attached so the UI can map it
+ * to a safe French message (raw payloads are never surfaced).
+ */
+export async function forgotPassword(email: string): Promise<string> {
+  const res = await apiFetch(`${BASE}/auth/forgot`, {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+  let message = '';
+  try {
+    const data = await res.json().catch(() => ({}));
+    message = (data as any)?.message || (data as any)?.error?.message || '';
+  } catch {
+    /* ignore parse errors — the UI never surfaces raw payloads */
+  }
+  if (!res.ok) {
+    const error: any = new Error(message);
+    error.status = res.status;
+    throw error;
+  }
+  return message || 'Si cette adresse existe, un lien de réinitialisation sera envoyé.';
+}
+
+/**
  * Restore a session on page load using the HttpOnly refresh cookie.
  * Returns the server-validated profile (or null when not authenticated).
  */
