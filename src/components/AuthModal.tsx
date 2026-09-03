@@ -467,7 +467,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </div>
                   {mode === 'login' && (
                     <div className="mt-2 text-right">
-                      <span className="text-xs text-amber-400 cursor-not-allowed" title="Disponible dans Phase 2">Mot de passe oublié ?</span>
+                      <a href="/reset-password" className="text-xs text-amber-400 cursor-pointer">Mot de passe oublié ?</a>
                     </div>
                   )}
                 </div>
