@@ -38,8 +38,8 @@ export async function sendPasswordResetEmail(to: string, resetUrl: string): Prom
       user_id: publicKey,
       accessToken: privateKey,
       template_params: {
-        to_email: to,
-        reset_url: resetUrl,
+        email: to,
+        link: resetUrl,
       },
     };
 
