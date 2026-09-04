@@ -1,4 +1,4 @@
-// Minimal email sender utility. Uses Resend API via fetch if configured.
+// Minimal email sender utility. Uses EmailJS REST API via fetch if configured.
 // In `test` mode it records sent emails to an in-memory array for assertions.
 import { config } from '../config';
 
@@ -21,38 +21,52 @@ export async function sendPasswordResetEmail(to: string, resetUrl: string): Prom
     return true;
   }
 
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.EMAIL_FROM;
-  if (!apiKey || !from) {
-    console.warn('[KONSTRIVO] Email not sent: RESEND_API_KEY or EMAIL_FROM not configured.');
+  const serviceId = process.env.EMAILJS_SERVICE_ID;
+  const templateId = process.env.EMAILJS_TEMPLATE_ID;
+  const publicKey = process.env.EMAILJS_PUBLIC_KEY;
+  if (!serviceId || !templateId || !publicKey) {
+    console.warn('[KONSTRIVO] Email not sent: EmailJS credentials not configured.');
     return false;
   }
 
   try {
-    // Resend API payload — POST https://api.resend.com/emails
+    // EmailJS REST API payload — POST https://api.emailjs.com/api/v1.0/email/send
     const payload = {
-      from,
-      to: [to],
-      subject,
-      text,
-      html,
+      service_id: serviceId,
+      template_id: templateId,
+      user_id: publicKey,
+      template_params: {
+        to_email: to,
+        reset_url: resetUrl,
+      },
     };
 
     // Use global fetch if available
     const fetchFn: any = (globalThis as any).fetch;
     if (!fetchFn) throw new Error('fetch not available');
 
-    const res = await fetchFn('https://api.resend.com/emails', {
+    const res = await fetchFn('https://api.emailjs.com/api/v1.0/email/send', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(payload),
     });
 
-    if (!res || res.status >= 400) {
-      console.warn('[KONSTRIVO] Password reset email delivery failed');
+    if (!res) {
+      console.warn('[KONSTRIVO] Password reset email delivery failed: no response');
+      return false;
+    }
+    if (res.status >= 400) {
+      // Diagnostic only: log non-2xx status and EmailJS response body.
+      // Never log resetUrl / token / password / credentials.
+      let bodyText = '';
+      try {
+        bodyText = (await res.text()) || '';
+      } catch {
+        bodyText = '(unreadable body)';
+      }
+      console.warn(`[KONSTRIVO] Password reset email delivery failed: HTTP ${res.status} — ${bodyText}`);
       return false;
     }
     return true;
