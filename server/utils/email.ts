@@ -71,7 +71,11 @@ export async function sendPasswordResetEmail(to: string, resetUrl: string): Prom
     }
     return true;
   } catch (err) {
-    console.warn('[KONSTRIVO] Password reset email delivery failed');
+    // Diagnostic only: log the network/fetch error name and message.
+    // Never log resetUrl / token / password / payload / credentials.
+    const errName = (err && (err as any).name) || 'Error';
+    const errMsg = (err && (err as any).message) || 'unknown error';
+    console.warn(`[KONSTRIVO] Password reset email delivery failed: ${errName} — ${errMsg}`);
     return false;
   }
 }
