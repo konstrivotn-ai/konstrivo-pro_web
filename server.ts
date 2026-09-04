@@ -99,6 +99,11 @@ export function createAiEstimatorHandler(aiClient?: any) {
 }
 
 async function startServer() {
+  // ── TEMP DIAGNOSTIC (prints ONLY booleans / non-secrets; never env values) ──
+  console.log(
+    `[KONSTRIVO][DIAG] RESEND_API_KEY=${Boolean(process.env.RESEND_API_KEY)} EMAIL_FROM=${Boolean(process.env.EMAIL_FROM)} NODE_ENV=${process.env.NODE_ENV}`
+  );
+
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
