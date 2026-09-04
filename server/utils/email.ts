@@ -24,7 +24,8 @@ export async function sendPasswordResetEmail(to: string, resetUrl: string): Prom
   const serviceId = process.env.EMAILJS_SERVICE_ID;
   const templateId = process.env.EMAILJS_TEMPLATE_ID;
   const publicKey = process.env.EMAILJS_PUBLIC_KEY;
-  if (!serviceId || !templateId || !publicKey) {
+  const privateKey = process.env.EMAILJS_PRIVATE_KEY;
+  if (!serviceId || !templateId || !publicKey || !privateKey) {
     console.warn('[KONSTRIVO] Email not sent: EmailJS credentials not configured.');
     return false;
   }
@@ -35,6 +36,7 @@ export async function sendPasswordResetEmail(to: string, resetUrl: string): Prom
       service_id: serviceId,
       template_id: templateId,
       user_id: publicKey,
+      accessToken: privateKey,
       template_params: {
         to_email: to,
         reset_url: resetUrl,
