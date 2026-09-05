@@ -19,6 +19,8 @@ import { parseCsv, CsvRow } from '../../utils/csv';
 import { sha256Hex, generateId } from '../../utils/crypto';
 import { notFound, badRequest, forbidden, conflict, unsupportedMediaType } from '../../utils/errors';
 import { SupplierCatalogItem } from '../../types';
+import { submitPendingPriceUpdate } from '../../repositories/drizzlePriceRepository';
+import { buildSupplierCsvPendingPlan } from '../../priceSources/supplierCsv';
 
 const router = Router();
 
@@ -74,6 +76,14 @@ router.post('/upload',
         supplierName,
       });
 
+      // Step 11 — explicit market/currency for the WHOLE file (form fields or
+      // query-style body fields). No hidden mixing: an FR/EUR file must be
+      // uploaded with countryCode=FR&currencyCode=EUR. The endpoint's
+      // documented home default is TN/TND (the supplier portal's market).
+      const countryCode = String(getField(req.uploadedFields, 'countryCode') || req.body?.countryCode || 'TN').toUpperCase();
+      const currencyCode = String(getField(req.uploadedFields, 'currencyCode') || req.body?.currencyCode || 'TND').toUpperCase();
+      const pendingSummary = { submitted: 0, unmapped: 0, invalid: [] as string[], market: countryCode, currency: currencyCode };
+
       // Parse CSV rows → SupplierCatalogItem[] (ISOLATED — never mutates official data)
       try {
         const rows: CsvRow[] = parseCsv(csvContent);
@@ -105,12 +115,43 @@ router.post('/upload',
           };
         }));
         supplierImportRepository.setParsedItems(imp.id, items);
+
+        // Step 11 — route matched rows into the PENDING pipeline instead of
+        // dropping them. Mapping is by materials.code (already done above via
+        // findByCode); unmatched codes are reported, NEVER auto-created.
+        // submitPendingPriceUpdate writes SUPPLIER_SUBMITTED / is_current=false /
+        // company_id=NULL rows only — the official price stays untouched until
+        // an explicit Admin approve (Step 8 review UI).
+        const plan = buildSupplierCsvPendingPlan(items, {
+          countryCode,
+          currencyCode,
+          supplierId: imp.supplierId,
+          fileName,
+        });
+        pendingSummary.unmapped = plan.unmapped.length;
+        for (const s of plan.submissions) {
+          try {
+            await submitPendingPriceUpdate({
+              materialCode: s.materialCode,
+              price: s.price,
+              countryCode: s.countryCode,
+              currencyCode: s.currencyCode,
+              supplierId: s.supplierId,
+              effectiveFrom: s.effectiveFrom,
+              notes: s.notes,
+            });
+            pendingSummary.submitted++;
+          } catch (subErr) {
+            pendingSummary.invalid.push(`${s.materialCode}: ${(subErr as Error).message}`);
+          }
+        }
+        for (const inv of plan.invalid) pendingSummary.invalid.push(inv.reason);
       } catch (parseErr) {
         // Parsing failure keeps the import in UPLOADED state with a note.
       }
 
       const updated = supplierImportRepository.findById(imp.id)!;
-      res.status(201).json({ data: updated });
+      res.status(201).json({ data: updated, pendingPriceUpdates: pendingSummary });
     } catch (err) { next(err); }
   }
 );

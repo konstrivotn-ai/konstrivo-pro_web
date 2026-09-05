@@ -7,6 +7,8 @@ import { Router } from 'express';
 import { authRouter, meRouter } from './auth';
 import { materialsRouter } from './materials';
 import { pricesRouter } from './prices';
+import { catalogRouter } from './catalog';
+import { machineRouter } from './machine';
 import { devisRouter } from './devis';
 import { suppliersRouter } from './suppliers';
 import { artisansRouter } from './artisans';
@@ -62,6 +64,8 @@ export function setupV1Router(): Router {
   router.use('/users', meRouter);
   router.use('/materials', materialsRouter);
   router.use('/prices', pricesRouter);
+  router.use('/catalog', catalogRouter);
+  router.use('/machine', machineRouter);
   router.use('/devis', devisRouter);
   router.use('/suppliers', suppliersRouter);
   router.use('/artisans', artisansRouter);

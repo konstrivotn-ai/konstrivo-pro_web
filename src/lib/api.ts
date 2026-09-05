@@ -277,6 +277,79 @@ export async function listPrices(opts?: { materialId?: string; market?: string; 
   return await res.json().catch(() => ({ data: [], page: 1, limit: 20, total: 0 }));
 }
 
+// ---------------- Catalog (Admin → PostgreSQL) ----------------
+/**
+ * Step 5 — upsert an OFFICIAL material + its official current price.
+ * Requires CATALOG_OFFICIAL_MANAGE (admin / ENTERPRISE).
+ */
+export async function upsertCatalogItem(body: {
+  code: string;
+  price: number;
+  nameFr: string;
+  nameAr?: string;
+  nameDerja?: string;
+  trade?: string;
+  category?: string;
+  unit?: string;
+  currencyCode?: string;
+  countryCode?: string;
+  effectiveFrom?: string;
+  technicalSpecs?: string;
+}) {
+  const res = await apiFetch(`${BASE}/catalog/upsert`, { method: 'POST', body: JSON.stringify(body) });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any)?.error?.message || 'Failed to upsert catalog item');
+  }
+  const data = await res.json();
+  return data.data || data;
+}
+
+// ─────────────── Price Update Foundation (Step 8) ───────────────────────────
+// Incoming Price Update → Pending → Admin Review → Official Current Price.
+// All require CATALOG_OFFICIAL_MANAGE (server-side, unchanged).
+
+export async function listPendingPriceUpdates(opts?: { countryCode?: string; currencyCode?: string }) {
+  const q = new URLSearchParams();
+  if (opts?.countryCode) q.set('countryCode', opts.countryCode);
+  if (opts?.currencyCode) q.set('currencyCode', opts.currencyCode);
+  const res = await apiFetch(`${BASE}/catalog/price-updates/pending?${q.toString()}`, { method: 'GET' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any)?.error?.message || 'Failed to list pending price updates');
+  }
+  const data = await res.json();
+  return data.data || [];
+}
+
+export async function submitPendingPriceUpdate(body: {
+  materialCode: string;
+  price: number;
+  currencyCode?: string;
+  countryCode?: string;
+  supplierId?: string;
+  effectiveFrom?: string;
+  notes?: string;
+}) {
+  const res = await apiFetch(`${BASE}/catalog/price-updates`, { method: 'POST', body: JSON.stringify(body) });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any)?.error?.message || 'Failed to submit pending price update');
+  }
+  const data = await res.json();
+  return data.data || data;
+}
+
+export async function approvePendingPriceUpdate(id: string) {
+  const res = await apiFetch(`${BASE}/catalog/price-updates/${id}/approve`, { method: 'POST' });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as any)?.error?.message || 'Failed to approve pending price update');
+  }
+  const data = await res.json();
+  return data.data || data;
+}
+
 export async function createDevis(body: any, idempotencyKey?: string) {
   const headers: Record<string, string> = {};
   if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;

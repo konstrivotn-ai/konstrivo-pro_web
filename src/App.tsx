@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { BottomNavBar } from './components/BottomNavBar';
 import { HomeTab } from './components/HomeTab';
@@ -30,6 +30,7 @@ import {
 } from './types';
 import { DEFAULT_MARKET_RATES } from './data/marketRates';
 import { restoreSession, logout, listDevis, createDevis, updateDevis, deleteDevis, listPrices } from './lib/api';
+import { buildPriceMap, mergeRates } from './utils/priceLookup';
 import { COUNTRIES_CONFIG } from './data/countryConfig';
 import { 
   INITIAL_PROJECTS, INITIAL_ARTISANS, INITIAL_MARKETPLACE_PRODUCTS, 
@@ -135,6 +136,17 @@ export default function App() {
     return DEFAULT_MARKET_RATES;
   });
 
+  // Step 3 — Server-price priority plumbing:
+  // - ratesSyncNonce: bumping it re-runs the EXISTING backend sync effect so a
+  //   valid server price is re-applied on top of local/default rates right
+  //   away (e.g. after "Reset rates") instead of waiting for a page reload.
+  // - skipRatesPersistRef: after a reset, skip ONE write of the persistence
+  //   effect so DEFAULT_MARKET_RATES are NOT re-seeded into localStorage as if
+  //   they were synchronized server data (localStorage must never shadow the
+  //   PostgreSQL prices).
+  const [ratesSyncNonce, setRatesSyncNonce] = useState(0);
+  const skipRatesPersistRef = useRef(false);
+
   // Active Devis
   const [currentDevis, setCurrentDevis] = useState<DevisDocument>(() => {
     const countryCfg = COUNTRIES_CONFIG['TN'];
@@ -184,7 +196,14 @@ export default function App() {
     localStorage.setItem('konstrivo_unit_system', unitSystem);
   }, [unitSystem]);
 
+  // Step 3 — persist rates, EXCEPT the single write right after a reset:
+  // "Reset rates" clears the cache; re-persisting the dev defaults immediately
+  // would recreate a fake "synchronized" cache that shadows real server prices.
   useEffect(() => {
+    if (skipRatesPersistRef.current) {
+      skipRatesPersistRef.current = false;
+      return;
+    }
     localStorage.setItem('konstrivo_rates_2026', JSON.stringify(rates));
   }, [rates]);
 
@@ -194,6 +213,11 @@ export default function App() {
   // - If multiple candidates for the same materialId, pick the one with the latest `updatedAt`,
   //   then highest `version` as tiebreaker.
   // - In production, do not synthesize prices from DEFAULT_MARKET_RATES when no cache exists.
+  // Step 3 — SERVER PRICE PRIORITY: when a valid server price exists for a
+  // material, it ALWAYS wins over the localStorage-cached value for the same
+  // id (see merge below). The backend is the source of truth; localStorage is
+  // only an offline / last-known cache. `ratesSyncNonce` re-runs this sync
+  // (e.g. after "Reset rates") so server prices are re-applied immediately.
   useEffect(() => {
     let active = true;
     if (isOffline) return;
@@ -203,82 +227,31 @@ export default function App() {
         const serverPrices = (res && (res as any).data) || [];
         if (!active) return;
 
-        const now = Date.now();
-        // group by materialId
-        const byMaterial = new Map<string, any[]>();
-        for (const p of serverPrices) {
-          if (!p || !p.materialId) continue;
-          const arr = byMaterial.get(p.materialId) || [];
-          arr.push(p);
-          byMaterial.set(p.materialId, arr);
-        }
+        // Step 5 — build the price map keyed by LEGACY slug (materials.code),
+        // falling back to materialId so the same path also works in-memory.
+        const priceMap = buildPriceMap(serverPrices);
 
-        const priceMap = new Map<string, number>();
-        for (const [materialId, entries] of byMaterial.entries()) {
-          const candidates = entries.filter((p: any) => {
-            if (p.isCurrent) return true;
-            try {
-              const from = p.effectiveFrom ? Date.parse(p.effectiveFrom) : NaN;
-              const to = p.effectiveTo ? Date.parse(p.effectiveTo) : NaN;
-              if (!isNaN(from) && (isNaN(to) || now <= to) && now >= from) return true;
-            } catch (e) {}
-            return false;
-          });
-          if (candidates.length === 0) continue;
-          candidates.sort((a: any, b: any) => {
-            const ta = a.updatedAt ? Date.parse(a.updatedAt) : (a.createdAt ? Date.parse(a.createdAt) : 0);
-            const tb = b.updatedAt ? Date.parse(b.updatedAt) : (b.createdAt ? Date.parse(b.createdAt) : 0);
-            if (ta !== tb) return tb - ta; // newest first
-            const va = typeof a.version === 'number' ? a.version : parseInt(a.version || '0', 10) || 0;
-            const vb = typeof b.version === 'number' ? b.version : parseInt(b.version || '0', 10) || 0;
-            return vb - va; // highest version first
-          });
-          const chosen = candidates[0];
-          if (chosen && typeof chosen.price === 'number') priceMap.set(materialId, chosen.price);
-        }
-
-        // Merge: update existing rates by material id; if production and no cache and no server prices,
-        // leave rates empty to indicate "no synchronized prices yet".
+        // Step 3 — SERVER PRICE PRIORITY merge (fallback preserved):
+        //   Tier 1: a valid server price for a legacy slug ALWAYS wins over the
+        //           localStorage-cached value with the same slug.
+        //   Tier 2: no valid server price (offline, failed, filtered, absent)
+        //           → existing local/default value is kept as-is.
+        //   Tier 3: server-only slugs are appended so they stay visible.
+        // If production and no cache and no server prices, leave rates empty to
+        // indicate "no synchronized prices yet".
         setRates(prev => {
           // If we have no previous rates and running in production and no server prices, remain empty.
           if (((import.meta as any).env && (import.meta as any).env.PROD) && (!localStorage.getItem('konstrivo_rates_2026')) && priceMap.size === 0) {
             return [];
           }
-          // Map existing rates by id for update; if a rate doesn't exist locally but server returned it,
-          // we will append a minimal entry so materialId linkage is preserved.
-          const prevById = new Map(prev.map(r => [r.id, r]));
-          const updated: MaterialRate[] = [];
-          // update local entries
-          for (const r of prev) {
-            if (priceMap.has(r.id)) {
-              updated.push({ ...r, unitPriceTnd: priceMap.get(r.id)! });
-            } else {
-              updated.push(r);
-            }
-          }
-          // append any server-only prices as lightweight entries (preserve materialId link)
-          for (const [materialId, price] of priceMap.entries()) {
-            if (!prevById.has(materialId)) {
-              updated.push({
-                id: materialId,
-                category: 'placo',
-                nameFr: 'Server price',
-                nameAr: '',
-                nameDerja: '',
-                unit: 'unit',
-                unitPriceTnd: price,
-                defaultPriceTnd: price
-              });
-            }
-          }
-          return updated;
+          return mergeRates(prev, priceMap);
         });
       } catch (err) {
         // silent: keep local cache
       }
     })();
     return () => { active = false; };
-  }, [isOffline, country]);
+  }, [isOffline, country, ratesSyncNonce]);
 
   useEffect(() => {
     localStorage.setItem('konstrivo_devis_history', JSON.stringify(devisHistory));
@@ -362,9 +335,17 @@ export default function App() {
     setRates(updatedRates);
   };
 
+  // Step 3 — "Reset rates" restores the hardcoded dev barème in memory ONLY:
+  //  - skipRatesPersistRef prevents the persistence effect from immediately
+  //    re-seeding localStorage with DEFAULT_MARKET_RATES (a fake cache that
+  //    would shadow real server prices).
+  //  - ratesSyncNonce re-runs the backend sync NOW so valid server prices are
+  //    re-applied on top of the defaults instead of waiting for a page reload.
   const handleResetRates = () => {
+    skipRatesPersistRef.current = true;
     setRates(DEFAULT_MARKET_RATES);
     localStorage.removeItem('konstrivo_rates_2026');
+    setRatesSyncNonce(n => n + 1);
   };
 
   const handleAddToDevis = (item: DevisItem) => {

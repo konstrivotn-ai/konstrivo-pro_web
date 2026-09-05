@@ -1,6 +1,6 @@
 import { getDatabase } from '../db/client';
 import { materials } from '../db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, sql } from 'drizzle-orm';
 
 export async function findMaterialById(id: string) {
   const db = await getDatabase();
@@ -14,6 +14,55 @@ export async function findMaterialByCode(code: string) {
   if (!db) return undefined;
   const res = await db.select().from(materials).where(eq(materials.code, code)).limit(1);
   return res[0];
+}
+
+/**
+ * Step 5 — Idempotent upsert of an OFFICIAL material by its legacy `code`
+ * (e.g. `plaque_ba13_standard`). Official materials have company_id IS NULL.
+ * Re-running with the same code updates the existing row — never duplicates.
+ */
+export async function upsertMaterialByCode(data: {
+  code: string;
+  trade: string;
+  category: string;
+  nameFr: string;
+  nameAr?: string | null;
+  nameDerja?: string | null;
+  baseUnit: string;
+  technicalSpecs?: string | null;
+}) {
+  const db = await getDatabase();
+  if (!db) throw new Error('Database not available');
+  const existing = await db.select().from(materials)
+    .where(and(eq(materials.code, data.code), isNull(materials.companyId)))
+    .limit(1);
+  if (existing[0]) {
+    const [updated] = await db.update(materials).set({
+      trade: data.trade,
+      category: data.category,
+      nameFr: data.nameFr,
+      nameAr: data.nameAr ?? null,
+      nameDerja: data.nameDerja ?? null,
+      baseUnit: data.baseUnit,
+      technicalSpecs: data.technicalSpecs ?? null,
+      isOfficial: true,
+      updatedAt: new Date(),
+    }).where(eq(materials.id, existing[0].id)).returning();
+    return updated;
+  }
+  const [inserted] = await db.insert(materials).values({
+    code: data.code,
+    trade: data.trade,
+    category: data.category,
+    nameFr: data.nameFr,
+    nameAr: data.nameAr ?? null,
+    nameDerja: data.nameDerja ?? null,
+    baseUnit: data.baseUnit,
+    isOfficial: true,
+    companyId: null,
+    technicalSpecs: data.technicalSpecs ?? null,
+  }).returning();
+  return inserted;
 }
 
 export async function listMaterials({ trade, category, search, page = 1, limit = 20 }: any) {

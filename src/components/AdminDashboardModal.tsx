@@ -5,11 +5,11 @@ import {
   PlusCircle, Edit3, RefreshCw, KeyRound, Sparkles, Building2, Phone, Star, AlertCircle, LogOut,
   BarChart3, PieChart, ArrowRight, Eye, Calendar, MapPin, HardHat, ExternalLink,
   Coins, Percent, Receipt, Plus, Calculator, Settings,
-  Upload, FileSpreadsheet, Download, ListChecks, CheckSquare, Square, Award, Check
+  Upload, FileSpreadsheet, Download, ListChecks, CheckSquare, Square, Award, Check, Clock
 } from 'lucide-react';
 import { ArtisanDirectoryItem, MaterialRate, DevisDocument, Language, CountryCode, CurrencyCode, TradeCategory, UserProfile } from '../types';
-import { CURRENCY_SYMBOLS, formatPrice } from '../data/countryConfig';
-import { login } from '../lib/api';
+import { CURRENCY_SYMBOLS, COUNTRIES_CONFIG, formatPrice } from '../data/countryConfig';
+import { login, upsertCatalogItem, listPendingPriceUpdates, approvePendingPriceUpdate } from '../lib/api';
 
 export interface ProFeatureItem {
   id: string;
@@ -142,6 +142,37 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
 
   // Price Editing Local State
   const [editableRates, setEditableRates] = useState<MaterialRate[]>(rates);
+
+  // Step 7 — Multi-Market: target market (country + currency) that persisted
+  // official prices are saved under. Defaults to the currently selected UI
+  // country/currency. Extensible from COUNTRIES_CONFIG (no TN-only hardcoding).
+  const [selectedCountry, setSelectedCountry] = useState<CountryCode>(country);
+  const [selectedCurrency, setSelectedCurrency] = useState<CurrencyCode>(currency);
+
+  // Step 8 — Price Update Foundation: pending (unapproved) price updates for
+  // admin review. Minimal UI — a list + an Approve button per row.
+  const [pendingUpdates, setPendingUpdates] = useState<any[]>([]);
+  const loadPendingUpdates = async () => {
+    if (!isCurrentlyAdmin) return;
+    try { setPendingUpdates(await listPendingPriceUpdates()); } catch { setPendingUpdates([]); }
+  };
+  const handleApprovePending = async (id: string) => {
+    try {
+      await approvePendingPriceUpdate(id);
+      await loadPendingUpdates();
+      setNotification('✓ Prix approuvé : il devient le prix officiel courant de son marché.');
+      setTimeout(() => setNotification(null), 3500);
+    } catch {
+      setNotification('⚠ Impossible d\'approuver ce prix.');
+      setTimeout(() => setNotification(null), 3000);
+    }
+  };
+
+  // Load pending price updates whenever the admin opens the prices tab.
+  useEffect(() => {
+    if (activeAdminTab === 'prices') loadPendingUpdates();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeAdminTab, isCurrentlyAdmin]);
 
   // Dynamic Material Addition Form State
   const [showAddMaterialForm, setShowAddMaterialForm] = useState<boolean>(false);
@@ -290,11 +321,41 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     }
   };
 
-  // Save modified base prices
-  const handleSavePrices = () => {
+  // Save modified base prices — persist EACH rate to PostgreSQL (official catalog)
+  const handleSavePrices = async () => {
     onBulkUpdateRates(editableRates);
-    setNotification('✓ Tous les barèmes de prix ont été enregistrés et appliqués en direct.');
-    setTimeout(() => setNotification(null), 3000);
+    if (!isCurrentlyAdmin) {
+      setNotification('✓ Tous les barèmes de prix ont été enregistrés et appliqués en direct.');
+      setTimeout(() => setNotification(null), 3000);
+      return;
+    }
+    try {
+      let saved = 0;
+      for (const r of editableRates) {
+        try {
+          await upsertCatalogItem({
+            code: r.id,
+            price: r.unitPriceTnd,
+            nameFr: r.nameFr,
+            nameAr: r.nameAr || undefined,
+            nameDerja: r.nameDerja || undefined,
+            trade: r.category,
+            category: r.category,
+            unit: r.unit,
+            currencyCode: selectedCurrency,
+            countryCode: selectedCountry,
+            technicalSpecs: r.note || undefined,
+          });
+          saved++;
+        } catch (e) {
+          // skip individual failures; UI still reflects local edit
+        }
+      }
+      setNotification(`✓ Barèmes enregistrés : ${saved}/${editableRates.length} matériaux sauvegardés dans la base de données.`);
+    } catch (e) {
+      setNotification('✓ Barèmes appliqués en local (sauvegarde serveur partielle).');
+    }
+    setTimeout(() => setNotification(null), 3500);
   };
 
   // Single Rate Change in Local State
@@ -303,7 +364,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   };
 
   // Add New Material Handler
-  const handleCreateMaterial = (e: React.FormEvent) => {
+  const handleCreateMaterial = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMaterial.nameFr || newMaterial.unitPriceTnd <= 0) {
       alert('Veuillez fournir un nom de matériau et un prix unitaire supérieur à 0.');
@@ -330,6 +391,27 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     const updatedRates = [newMaterialRate, ...editableRates];
     setEditableRates(updatedRates);
     onBulkUpdateRates(updatedRates);
+
+    // Step 5 — persist the new official material + price to PostgreSQL
+    if (isCurrentlyAdmin) {
+      try {
+        await upsertCatalogItem({
+          code: createdId,
+          price: Number(newMaterial.unitPriceTnd),
+          nameFr: cleanNameFr,
+          nameAr: cleanNameAr || undefined,
+          nameDerja: cleanNameFr,
+          trade: newMaterial.category,
+          category: newMaterial.category,
+          unit: newMaterial.unit,
+          currencyCode: selectedCurrency,
+          countryCode: selectedCountry,
+          technicalSpecs: cleanNote || undefined,
+        });
+      } catch (e) {
+        // local add already reflected in UI; server save is best-effort here
+      }
+    }
 
     setNotification(`✓ Nouveau matériau "${cleanNameFr}" (${newMaterial.unitPriceTnd} DT/${newMaterial.unit}) ajouté aux barèmes BTP et calculateurs !`);
     
@@ -363,7 +445,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         let text = e.target?.result as string;
         if (!text) return;
@@ -471,7 +553,31 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
         setEditableRates(updatedRatesList);
         onBulkUpdateRates(updatedRatesList);
 
-        setNotification(`✓ Catalogue CSV Traité : ${importedCount} nouveaux matériaux créés, ${updatedCount} mis à jour dans le calculateur !`);
+        // Step 5 — best-effort: persist imported/updated rows to PostgreSQL
+        if (isCurrentlyAdmin) {
+          let csvSaved = 0;
+          for (const r of updatedRatesList) {
+            try {
+              await upsertCatalogItem({
+                code: r.id,
+                price: r.unitPriceTnd,
+                nameFr: r.nameFr,
+                nameAr: r.nameAr || undefined,
+                nameDerja: r.nameDerja || undefined,
+                trade: r.category,
+                category: r.category,
+                unit: r.unit,
+                currencyCode: selectedCurrency,
+                countryCode: selectedCountry,
+                technicalSpecs: r.note || undefined,
+              });
+              csvSaved++;
+            } catch (e) { /* best-effort */ }
+          }
+          setNotification(`✓ CSV traité : ${importedCount} créés / ${updatedCount} mis à jour — ${csvSaved} sauvegardés en base.`);
+        } else {
+          setNotification(`✓ Catalogue CSV Traité : ${importedCount} nouveaux matériaux créés, ${updatedCount} mis à jour dans le calculateur !`);
+        }
         setTimeout(() => setNotification(null), 4000);
 
       } catch (err) {
@@ -1269,6 +1375,44 @@ Tube PEX Sanitaire 20mm;plomberie;ml;3.5;Gainé rouge/bleu 50m;أنبوب صحي
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
+                    {/* Step 7 — Multi-Market selector: target Country + Currency
+                        for persisted official prices. Driven by COUNTRIES_CONFIG,
+                        so adding a new market later needs no schema change. */}
+                    <div className="flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-xl px-2 py-1.5">
+                      <MapPin className="w-3.5 h-3.5 text-sky-400" />
+                      <select
+                        value={selectedCountry}
+                        onChange={(e) => {
+                          const cCode = e.target.value as CountryCode;
+                          setSelectedCountry(cCode);
+                          // auto-align currency to the selected country's default
+                          const cfg = COUNTRIES_CONFIG[cCode];
+                          if (cfg) setSelectedCurrency(cfg.defaultCurrency);
+                        }}
+                        title="Marché cible (pays)"
+                        className="bg-slate-900 text-slate-100 text-xs font-mono border border-slate-700 rounded-lg px-1.5 py-1 outline-none cursor-pointer"
+                      >
+                        {Object.keys(COUNTRIES_CONFIG).map((cc) => {
+                          const cfg = COUNTRIES_CONFIG[cc as CountryCode];
+                          return (
+                            <option key={cc} value={cc}>
+                              {cfg.flag} {cfg.code} · {cfg.nameFr}
+                            </option>
+                          );
+                        })}
+                      </select>
+                      <select
+                        value={selectedCurrency}
+                        onChange={(e) => setSelectedCurrency(e.target.value as CurrencyCode)}
+                        title="Devise du prix"
+                        className="bg-slate-900 text-slate-100 text-xs font-mono border border-slate-700 rounded-lg px-1.5 py-1 outline-none cursor-pointer"
+                      >
+                        {(COUNTRIES_CONFIG[selectedCountry]?.supportedCurrencies || [selectedCurrency]).map((cur) => (
+                          <option key={cur} value={cur}>{cur}</option>
+                        ))}
+                      </select>
+                    </div>
+
                     {/* CSV Sample Download Template */}
                     <button
                       type="button"
@@ -1315,6 +1459,54 @@ Tube PEX Sanitaire 20mm;plomberie;ml;3.5;Gainé rouge/bleu 50m;أنبوب صحي
                     </button>
                   </div>
                 </div>
+
+                {/* Step 8 — Pending Price Updates (Admin Review) */}
+                {pendingUpdates.length > 0 && (
+                  <div className="bg-slate-950 p-4 rounded-2xl border border-sky-500/30">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                      <h4 className="text-xs font-bold text-sky-400 flex items-center gap-2">
+                        <Clock className="w-4 h-4" />
+                        <span>Mises à jour de prix en attente d'approbation</span>
+                      </h4>
+                      <span className="text-[10px] text-slate-400 font-mono">{pendingUpdates.length} en attente</span>
+                    </div>
+                    <table className="w-full text-left text-[11px] mt-3">
+                      <thead className="bg-slate-900 text-slate-400">
+                        <tr>
+                          <th className="px-2 py-1.5">Matériau</th>
+                          <th className="px-2 py-1.5">Marché</th>
+                          <th className="px-2 py-1.5">Prix</th>
+                          <th className="px-2 py-1.5">Reçu le</th>
+                          <th className="px-2 py-1.5 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pendingUpdates.map((pu) => (
+                          <tr key={pu.id} className="border-b border-slate-800">
+                            <td className="px-2 py-1.5 text-slate-200 font-mono">{pu.code || pu.materialId}</td>
+                            <td className="px-2 py-1.5 text-slate-300 font-mono">{pu.countryCode} · {pu.currency}</td>
+                            <td className="px-2 py-1.5 text-emerald-300 font-mono">{Number(pu.price).toFixed(3)}</td>
+                            <td className="px-2 py-1.5 text-slate-400 text-[10px]">
+                              {new Date(pu.createdAt).toLocaleDateString('fr-FR')}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">
+                              <button
+                                type="button"
+                                onClick={() => handleApprovePending(pu.id)}
+                                className="px-2.5 py-1 bg-sky-500 hover:bg-sky-400 text-slate-950 text-[10px] font-black rounded-lg cursor-pointer"
+                              >
+                                Approuver
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {pendingUpdates.length === 0 && isCurrentlyAdmin && activeAdminTab === 'prices' && (
+                  <p className="text-[11px] text-slate-500">Aucune mise à jour de prix en attente.</p>
+                )}
 
                 {/* Dynamic Material Addition Form */}
                 {showAddMaterialForm && (

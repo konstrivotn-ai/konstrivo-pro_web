@@ -9,6 +9,7 @@
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
+    "db:seed": "tsx server/db/seedCatalog.ts",
     "lint": "tsc --noEmit",
     "test": "tsx tests/run.ts"
   },

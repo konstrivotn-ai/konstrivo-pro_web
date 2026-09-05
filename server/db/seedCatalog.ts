@@ -1,0 +1,273 @@
+/**
+ * Step 4 — Production Catalog Seed (`npm run db:seed`).
+ *
+ * Idempotently seeds the canonical KONSTRIVO official catalog into the
+ * EXISTING PostgreSQL schema (no schema change, no migration, no deletes):
+ *
+ *   1. price_sources   — the canonical sources from PRICE_SOURCES.
+ *                        Naturally idempotent: `code` is the PRIMARY KEY.
+ *   2. materials       — one official row per DEFAULT_MARKET_RATES entry.
+ *                        - The legacy identifier (e.g. `plaque_ba13_standard`)
+ *                          is stored in `materials.code` (the existing
+ *                          identifier column) — `materials.id` stays the
+ *                          DB-generated UUID (type unchanged).
+ *                        - Lookup key: (code, company_id IS NULL) — the same
+ *                          key as the existing `uq_material_code` index.
+ *                        - Soft-deleted rows with the same code are
+ *                          resurrected (never duplicated, never deleted).
+ *   3. material_prices — one OFFICIAL current price per material:
+ *                        source_code='OFFICIAL_DEFAULT', TN / TND,
+ *                        is_current=true, company_id IS NULL.
+ *                        Lookup key: (material_id, source_code, is_current,
+ *                        is_deleted, company_id IS NULL) — existing columns
+ *                        only, no new constraints.
+ *                        CUSTOM / supplier / company prices are NEVER read,
+ *                        touched or replaced.
+ *
+ * Idempotency: every write is preceded by a lookup; re-running only inserts
+ * what is missing and updates rows whose official price actually changed.
+ * Running it once or ten times yields the same single row set.
+ *
+ * Safety:
+ *   - NODE_ENV=production requires SEED_CONFIRM=1 (or --dry-run).
+ *   - --dry-run performs the read-only lookups and prints the plan without
+ *     writing anything.
+ *   - No TRUNCATE / DROP / DELETE / schema DDL anywhere in this script.
+ *
+ * Usage:
+ *   npm run db:seed                 # seed the configured DATABASE_URL
+ *   npm run db:seed -- --dry-run    # read-only plan
+ *   SEED_CONFIRM=1 npm run db:seed  # explicit confirmation for production
+ */
+import 'dotenv/config';
+import { and, eq, isNull } from 'drizzle-orm';
+import { materialPrices, materials, priceSources } from './schema';
+import { DEFAULT_MARKET_RATES } from '../../src/data/marketRates';
+import { PRICE_SOURCES } from '../repositories/seed';
+
+const DRY_RUN = process.argv.includes('--dry-run');
+const OFFICIAL_SOURCE = 'OFFICIAL_DEFAULT';
+
+interface SeedStats {
+  sourcesInserted: number;
+  sourcesExisting: number;
+  materialsCreated: number;
+  materialsResurrected: number;
+  materialsUpdated: number;
+  materialsUnchanged: number;
+  pricesCreated: number;
+  pricesToCreate: number;
+  pricesUpdated: number;
+  pricesUnchanged: number;
+}
+
+const stats: SeedStats = {
+  sourcesInserted: 0,
+  sourcesExisting: 0,
+  materialsCreated: 0,
+  materialsResurrected: 0,
+  materialsUpdated: 0,
+  materialsUnchanged: 0,
+  pricesCreated: 0,
+  pricesToCreate: 0,
+  pricesUpdated: 0,
+  pricesUnchanged: 0,
+};
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function main(): Promise<void> {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    console.error('[KONSTRIVO-SEED] FATAL: DATABASE_URL is not set. Refusing to guess a target (see drizzle.config.ts).');
+    process.exit(1);
+  }
+
+  const isProd = process.env.NODE_ENV === 'production';
+  if (isProd && !DRY_RUN && process.env.SEED_CONFIRM !== '1') {
+    console.error('[KONSTRIVO-SEED] REFUSING: NODE_ENV=production requires SEED_CONFIRM=1 (or use --dry-run).');
+    process.exit(1);
+  }
+
+  // Same safe bootstrap pattern as server/db/client.ts (lazy dynamic imports).
+  const { drizzle } = await import('drizzle-orm/postgres-js');
+  const postgresFactory = (await import('postgres')).default;
+  const client = postgresFactory(databaseUrl, { max: 1, idle_timeout: 5, connect_timeout: 10 });
+  const db = drizzle(client);
+
+  try {
+    await client`SELECT 1`;
+  } catch (err) {
+    console.error('[KONSTRIVO-SEED] FATAL: cannot connect to DATABASE_URL:', err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+
+  let host = 'unknown';
+  try { host = new URL(databaseUrl).host; } catch { /* keep 'unknown' — never print credentials */ }
+
+  console.log(`[KONSTRIVO-SEED] target host : ${host} (${isProd ? 'PRODUCTION' : 'non-production'})`);
+  console.log(`[KONSTRIVO-SEED] mode        : ${DRY_RUN ? 'DRY-RUN (read-only plan, no writes)' : 'WRITE (additive, idempotent)'}`);
+  console.log(`[KONSTRIVO-SEED] catalog     : ${DEFAULT_MARKET_RATES.length} materials from src/data/marketRates.ts`);
+  const startedAt = Date.now();
+
+  try {
+    // ── 1) price_sources — PK `code` makes this naturally idempotent ────────
+    for (const source of PRICE_SOURCES) {
+      const existing = await db.select().from(priceSources)
+        .where(eq(priceSources.code, source.code))
+        .limit(1);
+      if (existing.length > 0) { stats.sourcesExisting++; continue; }
+      stats.sourcesInserted++;
+      if (DRY_RUN) continue;
+      await db.insert(priceSources).values({
+        code: source.code,
+        name: source.name,
+        isVerified: source.isVerified,
+        priorityWeight: source.priorityWeight,
+      }).onConflictDoNothing({ target: priceSources.code });
+    }
+    // ── 2) materials — upsert by (code, company_id IS NULL) ─────────────────
+    for (const rate of DEFAULT_MARKET_RATES) {
+      const desired = {
+        trade: rate.category,
+        category: rate.category,
+        nameFr: rate.nameFr,
+        nameAr: rate.nameAr ?? null,
+        nameDerja: rate.nameDerja ?? null,
+        baseUnit: rate.unit,
+        isOfficial: true,
+        technicalSpecs: rate.note ?? null,
+      };
+
+      const found = await db.select().from(materials)
+        .where(and(eq(materials.code, rate.id), isNull(materials.companyId)))
+        .limit(1);
+
+      if (found.length === 0) {
+        // New official material — legacy identifier lives in `materials.code`.
+        stats.materialsCreated++;
+        if (DRY_RUN) continue;
+        await db.insert(materials).values({
+          code: rate.id,
+          trade: desired.trade,
+          category: desired.category,
+          nameFr: desired.nameFr,
+          nameAr: desired.nameAr,
+          nameDerja: desired.nameDerja,
+          baseUnit: desired.baseUnit,
+          isOfficial: desired.isOfficial,
+          companyId: null,
+          technicalSpecs: desired.technicalSpecs,
+        }).returning({ id: materials.id });
+        continue;
+      }
+
+      const current = found[0];
+      const identical =
+        !current.isDeleted &&
+        current.trade === desired.trade &&
+        current.category === desired.category &&
+        current.nameFr === desired.nameFr &&
+        (current.nameAr ?? null) === desired.nameAr &&
+        (current.nameDerja ?? null) === desired.nameDerja &&
+        current.baseUnit === desired.baseUnit &&
+        current.isOfficial === desired.isOfficial &&
+        (current.technicalSpecs ?? null) === desired.technicalSpecs;
+
+      if (identical) { stats.materialsUnchanged++; continue; }
+
+      // Update in place (or resurrect a soft-deleted row) — never duplicate.
+      stats[current.isDeleted ? 'materialsResurrected' : 'materialsUpdated']++;
+      if (DRY_RUN) continue;
+      await db.update(materials).set({
+        trade: desired.trade,
+        category: desired.category,
+        nameFr: desired.nameFr,
+        nameAr: desired.nameAr,
+        nameDerja: desired.nameDerja,
+        baseUnit: desired.baseUnit,
+        isOfficial: desired.isOfficial,
+        technicalSpecs: desired.technicalSpecs,
+        isDeleted: false,
+        deletedAt: null,
+        updatedAt: new Date(),
+      }).where(eq(materials.id, current.id));
+    }
+    // ── 3) material_prices — one official current price per material ────────
+    for (const rate of DEFAULT_MARKET_RATES) {
+      const found = await db.select().from(materials)
+        .where(and(eq(materials.code, rate.id), isNull(materials.companyId)))
+        .limit(1);
+      const materialId: string | undefined = found[0]?.id;
+
+      if (!materialId) {
+        // Dry-run on an empty DB: the material itself would only exist after a
+        // real run — the official price follows right after it.
+        stats.pricesToCreate++;
+        continue;
+      }
+
+      const priceFound = await db.select().from(materialPrices).where(and(
+        eq(materialPrices.materialId, materialId),
+        eq(materialPrices.sourceCode, OFFICIAL_SOURCE),
+        eq(materialPrices.isCurrent, true),
+        eq(materialPrices.isDeleted, false),
+        isNull(materialPrices.companyId),
+      )).limit(1);
+
+      if (priceFound.length === 0) {
+        stats.pricesCreated++;
+        if (DRY_RUN) continue;
+        await db.insert(materialPrices).values({
+          materialId,
+          sourceCode: OFFICIAL_SOURCE,
+          countryCode: 'TN',
+          currencyCode: 'TND',
+          unitPrice: rate.unitPriceTnd.toFixed(3),
+          companyId: null,
+          supplierId: null,
+          isCurrent: true,
+          effectiveFrom: todayIso(),
+          notes: rate.defaultPriceTnd !== rate.unitPriceTnd
+            ? `Default: ${rate.defaultPriceTnd} TND`
+            : undefined,
+        });
+        continue;
+      }
+
+      const currentPrice = priceFound[0];
+      const samePrice = parseFloat(String(currentPrice.unitPrice)).toFixed(3) === rate.unitPriceTnd.toFixed(3);
+      if (samePrice) { stats.pricesUnchanged++; continue; }
+
+      // Official barème changed → update the official current price in place.
+      // CUSTOM / supplier prices for the same material are NOT touched.
+      stats.pricesUpdated++;
+      if (DRY_RUN) continue;
+      await db.update(materialPrices).set({
+        unitPrice: rate.unitPriceTnd.toFixed(3),
+        effectiveFrom: todayIso(),
+        updatedAt: new Date(),
+      }).where(eq(materialPrices.id, currentPrice.id));
+    }
+
+    // ── Summary ──────────────────────────────────────────────────────────────
+    const label = DRY_RUN ? 'WOULD' : 'DID';
+    console.log('[KONSTRIVO-SEED] ── Summary ─────────────────────────────');
+    console.log(`[KONSTRIVO-SEED] price_sources : ${label} insert ${stats.sourcesInserted}, existing ${stats.sourcesExisting}`);
+    console.log(`[KONSTRIVO-SEED] materials     : ${label} create ${stats.materialsCreated}, resurrect ${stats.materialsResurrected}, update ${stats.materialsUpdated}, unchanged ${stats.materialsUnchanged}`);
+    if (stats.pricesToCreate > 0) {
+      console.log(`[KONSTRIVO-SEED] prices        : ${stats.pricesToCreate} would follow newly created materials (run without --dry-run first)`);
+    }
+    console.log(`[KONSTRIVO-SEED] prices        : ${label} create ${stats.pricesCreated}, update ${stats.pricesUpdated}, unchanged ${stats.pricesUnchanged}`);
+    console.log(`[KONSTRIVO-SEED] done in ${Date.now() - startedAt}ms ${DRY_RUN ? '(dry-run — nothing was written)' : ''}`);
+  } finally {
+    try { await client.end({ timeout: 1 }); } catch { /* never connected */ }
+  }
+}
+
+main().catch(err => {
+  console.error('[KONSTRIVO-SEED] FATAL:', err instanceof Error ? err.message : err);
+  process.exit(1);
+});
