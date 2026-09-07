@@ -21,6 +21,7 @@ import { CatalogUploadModal } from './components/CatalogUploadModal';
 import { SupplierDashboardModal } from './components/SupplierDashboardModal';
 import { LivePriceIndexWidget } from './components/LivePriceIndexWidget';
 import { AdminDashboardModal } from './components/AdminDashboardModal';
+import { VisualDevisWizardModal } from './components/VisualDevisWizardModal';
 
 import { 
   Language, RegionTunisia, MaterialRate, DevisDocument, DevisItem,
@@ -162,6 +163,7 @@ export default function App() {
   const [showCatalogModal, setShowCatalogModal] = useState<boolean>(false);
   const [showSupplierModal, setShowSupplierModal] = useState<boolean>(false);
   const [showAdminModal, setShowAdminModal] = useState<boolean>(false);
+  const [showWizardModal, setShowWizardModal] = useState<boolean>(false);
 
   // User Profile State — initialized empty; hydrated securely from the server
   // session via restoreSession() (HttpOnly refresh cookie). The profile is
@@ -567,6 +569,7 @@ export default function App() {
         onOpenSyncModal={() => setShowSyncModal(true)}
         onOpenAuthModal={() => setShowAuthModal(true)}
                 onOpenAdminModal={openAdminModal}
+        onOpenWizardModal={() => setShowWizardModal(true)}
         onOpenSupplierModal={() => setShowSupplierModal(true)}
         currentUser={currentUser}
         isOffline={isOffline}
@@ -778,6 +781,18 @@ export default function App() {
           lang={lang}
           country={country}
           currency={currency}
+        />
+      )}
+
+      {/* Visual Multi-Step Request Wizard Modal */}
+      {showWizardModal && (
+        <VisualDevisWizardModal
+          isOpen={showWizardModal}
+          onClose={() => setShowWizardModal(false)}
+          lang={lang}
+          country={country}
+          currency={currency}
+          userRegion={region}
         />
       )}
 

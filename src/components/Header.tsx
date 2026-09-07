@@ -24,6 +24,7 @@ interface HeaderProps {
   onOpenSyncModal: () => void;
   onOpenAuthModal: () => void;
   onOpenAdminModal?: () => void;
+  onOpenWizardModal?: () => void;
   onOpenSupplierModal?: () => void;
   currentUser: UserProfile | null;
   isOffline: boolean;
@@ -46,6 +47,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenSyncModal,
   onOpenAuthModal,
   onOpenAdminModal,
+  onOpenWizardModal,
   onOpenSupplierModal,
   currentUser,
   isOffline
@@ -197,6 +199,16 @@ export const Header: React.FC<HeaderProps> = ({
 
           {/* Right Action Buttons */}
           <div className="hidden sm:flex items-center gap-3">
+            {onOpenWizardModal && (
+              <button
+                onClick={onOpenWizardModal}
+                className="px-3.5 py-2 rounded-xl text-xs sm:text-sm font-bold bg-violet-500/10 text-violet-300 border border-violet-500/30 hover:bg-violet-500/20 transition-all cursor-pointer flex items-center gap-1.5"
+                title="Assistant Devis Visuel"
+              >
+                <Sparkles className="w-4 h-4 shrink-0" />
+                <span>Devis Visuel</span>
+              </button>
+            )}
             {/* Search Icon Button */}
             <button
               onClick={() => setShowSearchModal(true)}
