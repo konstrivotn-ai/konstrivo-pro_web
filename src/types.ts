@@ -141,6 +141,12 @@ export interface DevisDocument {
   total: number;
   notes: string;
   status: 'brouillon' | 'envoye' | 'valide';
+  // Company identity — client-side fields ONLY (edited in the Devis view,
+  // resolved/fallback via utils/devisFields.ts; NOT persisted as DB columns).
+  companyName?: string;
+  companyPhone?: string;
+  companyMatricule?: string;
+  companyAddress?: string;
 }
 
 export interface KnowledgeArticle {

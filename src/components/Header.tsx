@@ -24,7 +24,6 @@ interface HeaderProps {
   onOpenSyncModal: () => void;
   onOpenAuthModal: () => void;
   onOpenAdminModal?: () => void;
-  onOpenWizardModal?: () => void;
   onOpenSupplierModal?: () => void;
   currentUser: UserProfile | null;
   isOffline: boolean;
@@ -47,7 +46,6 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenSyncModal,
   onOpenAuthModal,
   onOpenAdminModal,
-  onOpenWizardModal,
   onOpenSupplierModal,
   currentUser,
   isOffline
@@ -127,17 +125,6 @@ export const Header: React.FC<HeaderProps> = ({
                 ))}
               </select>
             </div>
-
-            {/* Assistant Devis Visuel Quick Trigger */}
-            {onOpenWizardModal && (
-              <button
-                onClick={onOpenWizardModal}
-                className="hidden sm:flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg text-[10px] font-black bg-gradient-to-r from-amber-400 to-amber-500 text-slate-950 shadow-md shadow-amber-500/20 cursor-pointer transition-transform hover:scale-105"
-              >
-                <Sparkles className="w-3 h-3" />
-                <span>Assistant Devis 5-Étapes</span>
-              </button>
-            )}
 
             {/* Offline/Online Live Indicator */}
             <button

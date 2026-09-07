@@ -1,18 +1,26 @@
-import React, { useState } from 'react';
-import { 
-  FileText, Share2, Printer, Plus, Trash2, Edit2, Save, Download, 
-  Check, Phone, User, MapPin, Building, ShieldCheck, Sparkles, FolderOpen,
-  Receipt, Landmark, Globe, Smartphone, ChevronRight, ChevronLeft,
-  Hammer, Layers, Sun, Home, Wrench, Shield, CheckCircle2, ArrowRight
+import React, { useState, useRef } from 'react';
+import {
+  FileText, Share2, Printer, Plus, Trash2, Edit2, Save, Download,
+  Check, Phone, User, MapPin, Building, FolderOpen,
+  Receipt, Landmark, Globe, Smartphone, AlertTriangle
 } from 'lucide-react';
 import { CountryCode, CurrencyCode, DevisDocument, DevisItem, Language, RegionTunisia, UnitSystem } from '../types';
 import { formatDevisForWhatsApp, openWhatsApp } from '../utils/whatsapp';
 import { COUNTRIES_CONFIG, CURRENCY_SYMBOLS, convertFromTnd, formatPrice } from '../data/countryConfig';
+import { toIsoDate, isDefaultCompanyName, DEFAULT_COMPANY_NAME, DEFAULT_COMPANY_PHONE, DEFAULT_COMPANY_MATRICULE } from '../utils/devisFields';
+import { buildDevisPrintHtml, type DevisForPrint } from '../utils/devisPrint';
+
+/** ISO (YYYY-MM-DD) → professional DD/MM/YYYY display (same format as the A4 PDF). */
+const formatDdMmYyyy = (iso: string): string =>
+  /^\d{4}-\d{2}-\d{2}$/.test(iso) ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : iso;
+
+/** DevisTab - Devis management tab. */
 
 interface DevisTabProps {
   devis: DevisDocument;
   setDevis: React.Dispatch<React.SetStateAction<DevisDocument>>;
   devisHistory: DevisDocument[];
+  onNewDevis: () => void;
   onSaveDevisHistory: (devis: DevisDocument) => void;
   onLoadFromHistory: (devis: DevisDocument) => void;
   onDeleteFromHistory: (id: string) => void;
@@ -27,6 +35,7 @@ export const DevisTab: React.FC<DevisTabProps> = ({
   devis,
   setDevis,
   devisHistory,
+  onNewDevis,
   onSaveDevisHistory,
   onLoadFromHistory,
   onDeleteFromHistory,
@@ -45,24 +54,28 @@ export const DevisTab: React.FC<DevisTabProps> = ({
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
-  // Multi-Step Request Wizard State
-  const [showWizard, setShowWizard] = useState(true);
-  const [wizardStep, setWizardStep] = useState<number>(1);
-  const [wizardProjectType, setWizardProjectType] = useState<'placo' | 'renovation' | 'construction' | 'isolation'>('placo');
-  const [wizardSurface, setWizardSurface] = useState<number>(45);
-  const [wizardLocation, setWizardLocation] = useState<string>('Tunis / Grand Tunis');
-  const [wizardQuality, setWizardQuality] = useState<'standard' | 'premium' | 'luxe'>('premium');
-
   const countryInfo = COUNTRIES_CONFIG[country] || COUNTRIES_CONFIG.TN;
   const currMeta = CURRENCY_SYMBOLS[currency] || { symbol: currency, decimals: 2 };
 
+  // Devis date normalized to YYYY-MM-DD for the native date input (existing logic).
+  const devisDateIso = toIsoDate(devis.date);
+
   // Recalculate totals
+  const isLaborTitle = (title: string) => {
+    const t = title.toLowerCase();
+    return (
+      t.includes("main d'\u0153uvre") ||
+      t.includes("main d'oeuvre") ||
+      t.includes("khidma") ||
+      t.includes("labor")
+    );
+  };
   const subtotalMaterials = devis.items
-    .filter(i => !i.title.toLowerCase().includes("main d'œuvre") && !i.title.toLowerCase().includes("khidma") && !i.title.toLowerCase().includes("labor"))
+    .filter(i => !isLaborTitle(i.title || ''))
     .reduce((acc, item) => acc + (item.totalConverted || item.totalTnd || 0), 0);
 
   const subtotalLabor = devis.items
-    .filter(i => i.title.toLowerCase().includes("main d'œuvre") || i.title.toLowerCase().includes("khidma") || i.title.toLowerCase().includes("labor"))
+    .filter(i => isLaborTitle(i.title || ''))
     .reduce((acc, item) => acc + (item.totalConverted || item.totalTnd || 0), 0);
 
   const rawSubtotal = devis.items.reduce((acc, item) => acc + (item.totalConverted ?? item.totalTnd ?? item.total ?? 0), 0);
@@ -76,204 +89,6 @@ export const DevisTab: React.FC<DevisTabProps> = ({
   const totalTtc = netHtSubtotal + tvaAmount + timbreAmount;
   const retenueAmount = (netHtSubtotal * retenueGarantiePercent) / 100;
   const netAPayer = totalTtc - retenueAmount;
-
-  // Wizard quick generation helper
-  const handleApplyWizard = () => {
-    let presetItems: DevisItem[] = [];
-    const area = wizardSurface || 40;
-    const mult = wizardQuality === 'luxe' ? 1.35 : wizardQuality === 'premium' ? 1.15 : 1.0;
-
-    if (wizardProjectType === 'placo') {
-      presetItems = [
-        {
-          id: `wiz-${Date.now()}-1`,
-          trade: 'placo',
-          title: 'Plaques Placo BA13 Hydrofuge/Standard (1.2x2.5m)',
-          quantity: Math.ceil((area * 1.05) / 3),
-          unit: 'plaque',
-          unitPrice: Math.round(36 * mult),
-          total: Math.ceil((area * 1.05) / 3) * Math.round(36 * mult),
-          unitPriceTnd: Math.round(36 * mult),
-          totalTnd: Math.ceil((area * 1.05) / 3) * Math.round(36 * mult),
-          unitPriceConverted: Math.round(36 * mult),
-          totalConverted: Math.ceil((area * 1.05) / 3) * Math.round(36 * mult),
-          details: 'Norme DTU 25.41 avec marge de chute 5%'
-        },
-        {
-          id: `wiz-${Date.now()}-2`,
-          trade: 'placo',
-          title: 'Ossature Métallique Fourrures F47 / Rails 48',
-          quantity: Math.ceil((area * 2) / 3),
-          unit: 'barre 3m',
-          unitPrice: 8.5,
-          total: Math.ceil((area * 2) / 3) * 8.5,
-          unitPriceTnd: 8.5,
-          totalTnd: Math.ceil((area * 2) / 3) * 8.5,
-          unitPriceConverted: 8.5,
-          totalConverted: Math.ceil((area * 2) / 3) * 8.5,
-          details: 'Entraxe 50cm & suspentes pivot'
-        },
-        {
-          id: `wiz-${Date.now()}-3`,
-          trade: 'placo',
-          title: 'Enduit à joint 25kg & Bande armée 90m',
-          quantity: Math.max(1, Math.ceil(area * 0.35 / 25)),
-          unit: 'sac 25kg',
-          unitPrice: 42.0,
-          total: Math.max(1, Math.ceil(area * 0.35 / 25)) * 42.0,
-          unitPriceTnd: 42.0,
-          totalTnd: Math.max(1, Math.ceil(area * 0.35 / 25)) * 42.0,
-          unitPriceConverted: 42.0,
-          totalConverted: Math.max(1, Math.ceil(area * 0.35 / 25)) * 42.0,
-          details: 'Finition 2 passes ponçage prêt à peindre'
-        },
-        {
-          id: `wiz-${Date.now()}-4`,
-          trade: 'placo',
-          title: 'Main d’œuvre Fourniture & Pose Plaquiste Certifié',
-          quantity: area,
-          unit: 'm²',
-          unitPrice: Math.round(18 * mult),
-          total: area * Math.round(18 * mult),
-          unitPriceTnd: Math.round(18 * mult),
-          totalTnd: area * Math.round(18 * mult),
-          unitPriceConverted: Math.round(18 * mult),
-          totalConverted: area * Math.round(18 * mult),
-          details: 'Pose complète, calicot et joints finition Q3'
-        }
-      ];
-    } else if (wizardProjectType === 'renovation') {
-      presetItems = [
-        {
-          id: `wiz-${Date.now()}-1`,
-          trade: 'maconnerie',
-          title: 'Démolition cloisons, dépose revêtements & évacuation gravats',
-          quantity: area,
-          unit: 'm²',
-          unitPrice: 15,
-          total: area * 15,
-          unitPriceTnd: 15,
-          totalTnd: area * 15,
-          unitPriceConverted: 15,
-          totalConverted: area * 15,
-          details: 'Évacuation décharge contrôlée'
-        },
-        {
-          id: `wiz-${Date.now()}-2`,
-          trade: 'carrelage',
-          title: 'Fourniture & Pose Grès Cérame Grand Format 60x120',
-          quantity: area,
-          unit: 'm²',
-          unitPrice: Math.round(75 * mult),
-          total: area * Math.round(75 * mult),
-          unitPriceTnd: Math.round(75 * mult),
-          totalTnd: area * Math.round(75 * mult),
-          unitPriceConverted: Math.round(75 * mult),
-          totalConverted: area * Math.round(75 * mult),
-          details: 'Colle C2TE haute performance et joints hydrofuges'
-        },
-        {
-          id: `wiz-${Date.now()}-3`,
-          trade: 'peinture',
-          title: 'Mise en peinture acrylique satinée 3 couches + enduit ratissage',
-          quantity: area * 2.5,
-          unit: 'm²',
-          unitPrice: 14,
-          total: area * 2.5 * 14,
-          unitPriceTnd: 14,
-          totalTnd: area * 2.5 * 14,
-          unitPriceConverted: 14,
-          totalConverted: area * 2.5 * 14,
-          details: 'Finition soignée sans aspérités'
-        }
-      ];
-    } else if (wizardProjectType === 'isolation') {
-      presetItems = [
-        {
-          id: `wiz-${Date.now()}-1`,
-          trade: 'isolation',
-          title: 'Fourniture Laine de Roche 50mm Haute Densité',
-          quantity: Math.ceil((area * 1.05) / 7.2),
-          unit: 'paquet 7.2m²',
-          unitPrice: 90,
-          total: Math.ceil((area * 1.05) / 7.2) * 90,
-          unitPriceTnd: 90,
-          totalTnd: Math.ceil((area * 1.05) / 7.2) * 90,
-          unitPriceConverted: 90,
-          totalConverted: Math.ceil((area * 1.05) / 7.2) * 90,
-          details: 'Résistance thermique R = 1.45 m²K/W'
-        },
-        {
-          id: `wiz-${Date.now()}-2`,
-          trade: 'isolation',
-          title: 'Pose de bande résiliente acoustique & étanchéité à l’air',
-          quantity: Math.ceil(area * 0.8),
-          unit: 'ml',
-          unitPrice: 3.5,
-          total: Math.ceil(area * 0.8) * 3.5,
-          unitPriceTnd: 3.5,
-          totalTnd: Math.ceil(area * 0.8) * 3.5,
-          unitPriceConverted: 3.5,
-          totalConverted: Math.ceil(area * 0.8) * 3.5,
-          details: 'Désolidarisation périphérique phonique'
-        },
-        {
-          id: `wiz-${Date.now()}-3`,
-          trade: 'isolation',
-          title: 'Main d’œuvre Pose Isolant Thermique & Phonique',
-          quantity: area,
-          unit: 'm²',
-          unitPrice: 8,
-          total: area * 8,
-          unitPriceTnd: 8,
-          totalTnd: area * 8,
-          unitPriceConverted: 8,
-          totalConverted: area * 8,
-          details: 'Pose conforme règles de l’art'
-        }
-      ];
-    } else {
-      // Construction neuve
-      presetItems = [
-        {
-          id: `wiz-${Date.now()}-1`,
-          trade: 'maconnerie',
-          title: 'Maçonnerie brique 12 trous & mortier ciment dosé à 350kg',
-          quantity: area,
-          unit: 'm²',
-          unitPrice: 32,
-          total: area * 32,
-          unitPriceTnd: 32,
-          totalTnd: area * 32,
-          unitPriceConverted: 32,
-          totalConverted: area * 32,
-          details: 'Élévation des murs et linteaux béton armé'
-        },
-        {
-          id: `wiz-${Date.now()}-2`,
-          trade: 'placo',
-          title: 'Doublage thermique intérieur & faux plafonds BA13',
-          quantity: area,
-          unit: 'm²',
-          unitPrice: 38,
-          total: area * 38,
-          unitPriceTnd: 38,
-          totalTnd: area * 38,
-          unitPriceConverted: 38,
-          totalConverted: area * 38,
-          details: 'Système complet avec isolant thermo-acoustique'
-        }
-      ];
-    }
-
-    setDevis(prev => ({
-      ...prev,
-      projectTitle: `${wizardProjectType.toUpperCase()} - ${wizardLocation} (${area}m²)`,
-      items: [...prev.items, ...presetItems]
-    }));
-    setWizardStep(4);
-  };
-
 
   // Update Devis Object
   const handleUpdateField = (field: keyof DevisDocument, value: any) => {
@@ -317,785 +132,318 @@ export const DevisTab: React.FC<DevisTabProps> = ({
     }));
   };
 
-  const handlePrintPdf = () => {
-    window.print();
-  };
-
-  const handleShareWhatsApp = () => {
-    const text = formatDevisForWhatsApp({ ...devis, totalTnd: totalTtc }, lang === 'fr' ? 'fr' : 'derja');
-    openWhatsApp(text, devis.clientPhone);
-  };
+  const printRef = useRef<HTMLDivElement | null>(null);
 
   const handleSaveToHistory = () => {
-    onSaveDevisHistory({
-      ...devis,
-      totalTnd: totalTtc,
-      tvaPercent: activeTvaPercent,
-      currency: currency
-    });
+    onSaveDevisHistory(devis);
     setSavedSuccess(true);
     setTimeout(() => setSavedSuccess(false), 2000);
   };
 
+  const handleShareWhatsApp = () => {
+    const msg = formatDevisForWhatsApp(devis, lang);
+    openWhatsApp(msg, devis.clientPhone);
+  };
+
+  const handlePrintPdf = () => {
+    const totals = {
+      subtotalMaterials,
+      subtotalLabor,
+      discount: discountAmount,
+      netHt: netHtSubtotal,
+      tvaPercent: activeTvaPercent,
+      tvaAmount,
+      timbreAmount,
+      totalTtc,
+      retenueAmount,
+      netAPayer,
+    };
+    const html = buildDevisPrintHtml({
+      devis: devis as DevisForPrint,
+      totals,
+      currencySymbol: currMeta.symbol,
+      decimals: currMeta.decimals,
+      countryName: countryInfo.nameFr,
+      buildingCodes: countryInfo.buildingCodes,
+      timbreLabel: countryInfo.timbreLabel,
+      includeTimbre,
+      retenueGarantiePercent,
+    });
+    const win = window.open('', '_blank');
+    if (win) {
+      win.document.write(html);
+      win.document.close();
+    }
+  };
+
   return (
     <div className="space-y-6">
-      {/* Top Action Ribbon - Hidden on print */}
+      {/* Top Action Ribbon */}
       <div className="bg-[#131b2e] rounded-2xl p-4 sm:p-5 border border-[#1e293b] shadow-xl flex flex-wrap items-center justify-between gap-3 print:hidden">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
             <FileText className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
-              <span>{lang === 'derja' ? 'إدارة التقارير والـ Devis الرسمي' : 'Générateur de Devis & Factures Pro'}</span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-slate-950 text-amber-400 border border-slate-800 font-mono font-bold">
-                {countryInfo.flag} {currency}
-              </span>
+            <h2 className="text-base sm:text-lg font-black text-white">
+              {lang === 'derja' ? 'إدارة التقارير والـ Devis الرسمي' : 'Générateur de Devis & Factures Pro'}
             </h2>
             <p className="text-xs text-slate-400">
-              {lang === 'derja' ? 'طباعة Devis مهني على ورق A4 أو إرساله مباشرة للزبون عبر الواتساب' : 'Formatage A4 aux normes BTP avec TVA, Timbre Fiscal et Retenue de Garantie'}
+              {lang === 'derja' ? 'طباعة Devis مهني على ورق A4' : 'Formatage A4 aux normes BTP'}
             </p>
           </div>
         </div>
-
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            onClick={() => setShowWizard(!showWizard)}
-            className="px-3.5 py-2 bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 text-xs font-bold rounded-xl border border-amber-500/40 flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <Sparkles className="w-4 h-4 text-amber-400" />
-            <span>{showWizard ? 'Masquer l’Assistant' : 'Assistant Devis Guidé'}</span>
+          <button onClick={onNewDevis} className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer">
+            <Plus className="w-4 h-4" />
+            <span>Nouveau Devis</span>
           </button>
-
-          <button
-            onClick={() => setShowHistoryModal(true)}
-            className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
+          <button onClick={() => setShowHistoryModal(true)} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 flex items-center gap-1.5 cursor-pointer">
             <FolderOpen className="w-4 h-4 text-amber-400" />
             <span>Historique ({devisHistory.length})</span>
           </button>
-
-          <button
-            onClick={handleSaveToHistory}
-            className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
+          <button onClick={handleSaveToHistory} className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 flex items-center gap-1.5 cursor-pointer">
             {savedSuccess ? <Check className="w-4 h-4 text-emerald-400" /> : <Save className="w-4 h-4 text-amber-400" />}
             <span>{savedSuccess ? 'Enregistré !' : 'Sauvegarder'}</span>
           </button>
-
-          <button
-            onClick={handleShareWhatsApp}
-            className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black rounded-xl shadow-lg shadow-emerald-600/20 flex items-center gap-1.5 transition-all cursor-pointer"
-          >
+          <button onClick={handleShareWhatsApp} className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer">
             <Share2 className="w-4 h-4" />
-            <span>WhatsApp Client</span>
+            <span>WhatsApp</span>
           </button>
-
-          <button
-            onClick={handlePrintPdf}
-            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black rounded-xl shadow-lg shadow-amber-500/20 flex items-center gap-1.5 transition-all cursor-pointer"
-          >
-            <Printer className="w-4 h-4 stroke-[2.5]" />
-            <span>Imprimer / PDF A4</span>
+          <button onClick={handlePrintPdf} className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black rounded-xl flex items-center gap-1.5 cursor-pointer">
+            <Printer className="w-4 h-4" />
+            <span>PDF A4</span>
           </button>
         </div>
       </div>
 
-      {/* MULTI-STEP REQUEST WIZARD (ASSISTANT DEVIS ÉTAPE PAR ÉTAPE) - Print: Hidden */}
-      {showWizard && (
-        <div className="bg-[#131b2e] rounded-3xl p-6 border border-[#1e293b] shadow-2xl space-y-6 print:hidden relative overflow-hidden bg-blueprint">
-          
-          {/* Top Wizard Bar */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="px-2.5 py-0.5 rounded-full bg-amber-500 text-slate-950 text-[10px] font-black uppercase tracking-wider">
-                  Assistant Intelligent
-                </span>
-                <h3 className="text-base font-black text-white">
-                  Création Rapide de Devis par Étape
-                </h3>
-              </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Sélectionnez le type d'intervention et configurez vos spécifications en 4 étapes fluides.
-              </p>
-            </div>
-
-            <div className="text-xs font-mono font-bold text-amber-400 bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800">
-              Étape {wizardStep} sur 4
-            </div>
-          </div>
-
-          {/* AMBER / GOLD PROGRESS INDICATOR BAR */}
-          <div className="space-y-2">
-            <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
-              <div 
-                className="h-full bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 rounded-full transition-all duration-500 shadow-md shadow-amber-500/50"
-                style={{ width: `${(wizardStep / 4) * 100}%` }}
-              />
-            </div>
-
-            <div className="grid grid-cols-4 text-center text-[11px] font-bold">
-              <span className={wizardStep >= 1 ? 'text-amber-400' : 'text-slate-500'}>
-                1. Type de Projet
-              </span>
-              <span className={wizardStep >= 2 ? 'text-amber-400' : 'text-slate-500'}>
-                2. Dimensions
-              </span>
-              <span className={wizardStep >= 3 ? 'text-amber-400' : 'text-slate-500'}>
-                3. Matériaux & Pose
-              </span>
-              <span className={wizardStep >= 4 ? 'text-amber-400' : 'text-slate-500'}>
-                4. Finalisation
-              </span>
-            </div>
-          </div>
-
-          {/* STEP 1: PROJECT TYPE SELECTION (VISUAL CARDS) */}
-          {wizardStep === 1 && (
-            <div className="space-y-4">
-              <h4 className="text-sm font-bold text-slate-200">
-                1. Quel type d'ouvrage souhaitez-vous chiffrer ?
-              </h4>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {[
-                  {
-                    id: 'placo',
-                    title: 'Placo & Faux Plafonds',
-                    sub: 'Plafonds suspendus BA13, cloisons M48, caissons LED & gorges',
-                    icon: Layers,
-                    badge: 'Recommandé Plaquiste'
-                  },
-                  {
-                    id: 'renovation',
-                    title: 'Rénovation Complète',
-                    sub: 'Revêtement carrelage, peinture intégrale & reprise maçonnerie',
-                    icon: Home,
-                    badge: 'Clé en main'
-                  },
-                  {
-                    id: 'isolation',
-                    title: 'Isolation & Acoustique',
-                    sub: 'Laine de roche, laine de verre, bande résiliente & pare-vapeur',
-                    icon: Sun,
-                    badge: 'Confort thermique'
-                  },
-                  {
-                    id: 'construction',
-                    title: 'Gros Œuvre & Maçonnerie',
-                    sub: 'Élévation briques 12 trous, doublage & cloisons de distribution',
-                    icon: Hammer,
-                    badge: 'BTP Structure'
-                  }
-                ].map(item => (
-                  <button
-                    key={item.id}
-                    onClick={() => setWizardProjectType(item.id as any)}
-                    className={`p-4 rounded-2xl border text-left transition-all duration-200 cursor-pointer relative flex flex-col justify-between h-44 ${
-                      wizardProjectType === item.id
-                        ? 'bg-amber-500/10 border-amber-500 shadow-xl shadow-amber-500/15'
-                        : 'bg-slate-950/80 border-slate-800 hover:border-slate-700 hover:bg-slate-900'
-                    }`}
-                  >
-                    <div>
-                      <div className="flex items-center justify-between mb-2">
-                        <div className={`p-2.5 rounded-xl ${wizardProjectType === item.id ? 'bg-amber-500 text-slate-950' : 'bg-slate-900 text-amber-400 border border-slate-800'}`}>
-                          <item.icon className="w-5 h-5" />
-                        </div>
-                        {wizardProjectType === item.id && (
-                          <CheckCircle2 className="w-5 h-5 text-amber-400" />
-                        )}
-                      </div>
-                      <h5 className="text-sm font-bold text-white mb-1">{item.title}</h5>
-                      <p className="text-xs text-slate-400 line-clamp-2">{item.sub}</p>
-                    </div>
-
-                    <span className="text-[10px] font-mono text-amber-400/90 font-bold">
-                      {item.badge}
-                    </span>
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex justify-end pt-2">
-                <button
-                  onClick={() => setWizardStep(2)}
-                  className="px-6 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs rounded-xl shadow-lg transition-all flex items-center gap-2 cursor-pointer"
-                >
-                  <span>Continuer : Dimensions & Spécifications</span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 2: DIMENSIONS & SITE CONFIG */}
-          {wizardStep === 2 && (
-            <div className="space-y-5">
-              <h4 className="text-sm font-bold text-slate-200">
-                2. Surface estimée et localisation du chantier
-              </h4>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
-                  <label className="text-xs font-bold text-slate-300 block">Surface du Projet (m²)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="5000"
-                    value={wizardSurface}
-                    onChange={(e) => setWizardSurface(Math.max(1, parseFloat(e.target.value) || 1))}
-                    className="w-full bg-[#131b2e] border border-slate-700 rounded-xl px-3 py-2 text-white font-mono text-sm font-bold"
-                  />
-                  <span className="text-[10px] text-slate-400">Equivalent env. {Math.round(wizardSurface * 1.05 / 3)} plaques standard</span>
-                </div>
-
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
-                  <label className="text-xs font-bold text-slate-300 block">Région / Gouvernorat</label>
-                  <input
-                    type="text"
-                    value={wizardLocation}
-                    onChange={(e) => setWizardLocation(e.target.value)}
-                    placeholder="Ex: Tunis, Sousse, Sfax, Nabeul..."
-                    className="w-full bg-[#131b2e] border border-slate-700 rounded-xl px-3 py-2 text-white text-xs font-bold"
-                  />
-                  <span className="text-[10px] text-slate-400">Pour adaptation des frais logistiques</span>
-                </div>
-
-                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
-                  <label className="text-xs font-bold text-slate-300 block">Gamme de Finition</label>
-                  <select
-                    value={wizardQuality}
-                    onChange={(e) => setWizardQuality(e.target.value as any)}
-                    className="w-full bg-[#131b2e] border border-slate-700 rounded-xl px-3 py-2 text-white text-xs font-bold"
-                  >
-                    <option value="standard">Standard (Locatif / Économique)</option>
-                    <option value="premium">Premium (Résidentiel / Villa Q3)</option>
-                    <option value="luxe">Luxe & Tertiaire (Haut standing)</option>
-                  </select>
-                  <span className="text-[10px] text-slate-400">Coefficient qualité appliqué</span>
-                </div>
-              </div>
-
-              <div className="flex justify-between pt-2">
-                <button
-                  onClick={() => setWizardStep(1)}
-                  className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 font-bold text-xs rounded-xl border border-slate-700 transition-colors flex items-center gap-1.5 cursor-pointer"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  <span>Précédent</span>
-                </button>
-
-                <button
-                  onClick={() => setWizardStep(3)}
-                  className="px-6 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs rounded-xl shadow-lg transition-all flex items-center gap-2 cursor-pointer"
-                >
-                  <span>Continuer : Prévisualiser le Bordereau</span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 3: PRE-POPULATION SUMMARY */}
-          {wizardStep === 3 && (
-            <div className="space-y-4">
-              <h4 className="text-sm font-bold text-slate-200">
-                3. Validation des postes de fournitures et main d'œuvre
-              </h4>
-
-              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3 text-xs">
-                <div className="flex justify-between items-center pb-2 border-b border-slate-800">
-                  <span className="font-bold text-white">Poste sélectionné :</span>
-                  <span className="text-amber-400 font-bold uppercase font-mono">{wizardProjectType} ({wizardSurface} m²)</span>
-                </div>
-                <div className="flex justify-between items-center text-slate-300">
-                  <span>Gamme sélectionnée :</span>
-                  <span className="font-bold text-emerald-400">{wizardQuality.toUpperCase()}</span>
-                </div>
-                <div className="flex justify-between items-center text-slate-300">
-                  <span>Chantier :</span>
-                  <span className="text-slate-200">{wizardLocation}</span>
-                </div>
-                <p className="text-[11px] text-slate-400 pt-1">
-                  En cliquant sur "Générer et Insérer dans le Devis", les lignes de calcul conformes au barème 2026 seront automatiquement injectées dans votre document officiel ci-dessous.
-                </p>
-              </div>
-
-              <div className="flex justify-between pt-2">
-                <button
-                  onClick={() => setWizardStep(2)}
-                  className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-slate-300 font-bold text-xs rounded-xl border border-slate-700 transition-colors flex items-center gap-1.5 cursor-pointer"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  <span>Précédent</span>
-                </button>
-
-                <button
-                  onClick={handleApplyWizard}
-                  className="px-7 py-3 bg-gradient-to-r from-amber-500 via-amber-400 to-amber-500 hover:from-amber-400 hover:to-amber-300 text-slate-950 font-black text-xs rounded-xl shadow-xl shadow-amber-500/20 transition-all flex items-center gap-2 cursor-pointer"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  <span>Générer et Insérer dans le Devis</span>
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 4: COMPLETED BANNER */}
-          {wizardStep === 4 && (
-            <div className="p-4 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-emerald-500 text-slate-950 flex items-center justify-center font-black">
-                  ✓
-                </div>
-                <div>
-                  <h5 className="text-xs font-black text-white">Lignes de devis générées avec succès !</h5>
-                  <p className="text-[11px] text-slate-300">
-                    Vous pouvez maintenant ajuster les quantités, personnaliser les prix unitaires ou imprimer en PDF ci-dessous.
-                  </p>
-                </div>
-              </div>
-
-              <button
-                onClick={() => setWizardStep(1)}
-                className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 cursor-pointer flex-shrink-0"
-              >
-                Nouveau Chiffrage
-              </button>
-            </div>
-          )}
-
-        </div>
-      )}
-
-      {/* Main Printable Document Canvas */}
-      <div className="bg-[#131b2e] print:bg-white rounded-3xl p-6 sm:p-10 border border-[#1e293b] print:border-none shadow-2xl space-y-8 text-white print:text-black transition-all">
-        
-        {/* Document Header */}
+      {/* Document Canvas */}
+      <div ref={printRef} className="bg-[#131b2e] print:bg-white rounded-3xl p-6 sm:p-10 border border-[#1e293b] print:border-none shadow-2xl space-y-8 text-white print:text-black">
         <div className="flex flex-col sm:flex-row justify-between items-start gap-6 border-b border-slate-800 print:border-slate-300 pb-6">
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-amber-500 flex items-center justify-center text-slate-950 font-black text-sm print:border print:border-black">
-                K
-              </div>
-              <span className="text-xl sm:text-2xl font-black tracking-tight font-mono text-white print:text-black">
-                {devis.companyName || 'KONSTRIVO BTP PRO'}
-              </span>
+              <input
+                type="text"
+                value={isDefaultCompanyName(devis.companyName) ? '' : (devis.companyName || '')}
+                placeholder={DEFAULT_COMPANY_NAME}
+                onChange={(e) => handleUpdateField('companyName', e.target.value)}
+                className="bg-transparent text-xl sm:text-2xl font-black font-mono text-white print:text-black placeholder:text-slate-600 focus:outline-none w-full"
+              />
             </div>
             <div className="text-xs text-slate-400 print:text-slate-600 space-y-0.5">
               <p className="flex items-center gap-1.5">
-                <MapPin className="w-3.5 h-3.5 text-amber-400 print:text-slate-600" />
-                <span>{devis.companyAddress || `Tunis - Région ${region}`} • {countryInfo.nameFr}</span>
+                <MapPin className="w-3.5 h-3.5 shrink-0 text-amber-400 print:text-slate-600" />
+                <input
+                  type="text"
+                  value={devis.companyAddress || ''}
+                  placeholder={`Tunis - Région ${region}`}
+                  onChange={(e) => handleUpdateField('companyAddress', e.target.value)}
+                  className="bg-transparent text-white print:text-black placeholder:text-slate-500 focus:outline-none w-full"
+                />
+                <span className="shrink-0">• {countryInfo.nameFr}</span>
               </p>
               <p className="flex items-center gap-1.5">
-                <Phone className="w-3.5 h-3.5 text-amber-400 print:text-slate-600" />
-                <span>Tél : {devis.companyPhone || '+216 71 000 000'}</span>
+                <Phone className="w-3.5 h-3.5 shrink-0 text-amber-400 print:text-slate-600" />
+                <span className="shrink-0">Tél : </span>
+                <input
+                  type="text"
+                  value={devis.companyPhone || ''}
+                  placeholder={DEFAULT_COMPANY_PHONE}
+                  onChange={(e) => handleUpdateField('companyPhone', e.target.value)}
+                  className="bg-transparent text-white print:text-black placeholder:text-slate-500 focus:outline-none w-full"
+                />
               </p>
               <p className="flex items-center gap-1.5">
-                <Landmark className="w-3.5 h-3.5 text-amber-400 print:text-slate-600" />
-                <span>R.C / Matricule Fiscal : {devis.companyMatricule || '1849204/A/M/000'}</span>
-              </p>
-              <p className="text-[10px] text-amber-400/80 print:text-slate-500 font-mono">
-                Normes d'Exécution : {countryInfo.buildingCodes}
+                <Landmark className="w-3.5 h-3.5 shrink-0 text-amber-400 print:text-slate-600" />
+                <span className="shrink-0">R.C : </span>
+                <input
+                  type="text"
+                  value={devis.companyMatricule || ''}
+                  placeholder={DEFAULT_COMPANY_MATRICULE}
+                  onChange={(e) => handleUpdateField('companyMatricule', e.target.value)}
+                  className="bg-transparent text-white print:text-black placeholder:text-slate-500 focus:outline-none w-full"
+                />
               </p>
             </div>
           </div>
-
-          {/* Right Reference Box */}
-          <div className="bg-slate-950 print:bg-slate-100 p-4 rounded-2xl border border-slate-800 print:border-slate-300 min-w-[240px] space-y-1.5 text-xs">
-            <div className="flex justify-between items-center">
-              <span className="font-bold text-slate-400 print:text-slate-600">DOCUMENT :</span>
-              <span className="font-mono font-black text-amber-400 print:text-amber-800 uppercase">
-                {devis.type === 'facture' ? 'FACTURE OFFICIELLE' : 'DEVIS ESTIMATIF'}
+          <div className="text-right space-y-1">
+            <div className="text-xs font-bold text-slate-400 print:text-slate-600">DEVIS ESTIMATIF</div>
+            <div className="text-sm font-mono font-bold text-amber-400 print:text-slate-800">
+              <span>Réf : </span>
+              <input type="text" value={devis.reference || (devis as any).devisNumber || ''} onChange={(e) => handleUpdateField('reference', e.target.value)} className="bg-transparent text-right font-mono font-bold text-white print:text-black focus:outline-none w-32" />
+            </div>
+            <div className="text-sm font-mono text-slate-300 print:text-slate-600">
+              <span>Date : </span>
+              <span className="relative inline-block">
+                <input
+                  type="date"
+                  value={devisDateIso}
+                  onChange={(e) => handleUpdateField('date', e.target.value)}
+                  className={`bg-transparent font-mono focus:outline-none cursor-pointer ${devisDateIso ? 'text-transparent' : 'text-white print:text-black'}`}
+                />
+                {/* Professional DD/MM/YYYY display — overlays the native input so the
+                    browser-locale format / jj/mm-aaaa placeholder never shows while a
+                    valid date exists. Date logic & picker behaviour unchanged. */}
+                {devisDateIso && (
+                  <span aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 flex items-center font-mono text-white print:text-black">
+                    {formatDdMmYyyy(devisDateIso)}
+                  </span>
+                )}
               </span>
             </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400 print:text-slate-600">RÉFÉRENCE :</span>
-              <input
-                type="text"
-                value={devis.reference}
-                onChange={(e) => handleUpdateField('reference', e.target.value)}
-                className="bg-transparent text-right font-mono font-bold text-white print:text-black focus:outline-none w-28"
-              />
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400 print:text-slate-600">DATE ÉMISSION :</span>
-              <input
-                type="date"
-                value={devis.date}
-                onChange={(e) => handleUpdateField('date', e.target.value)}
-                className="bg-transparent text-right font-mono text-white print:text-black focus:outline-none"
-              />
-            </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-400 print:text-slate-600">VALIDITÉ :</span>
-              <span className="font-mono text-slate-300 print:text-slate-700">{devis.validityDays || 30} Jours</span>
-            </div>
           </div>
         </div>
 
-        {/* Client & Project Details */}
+        {/* Client Info */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="bg-slate-950 print:bg-slate-50 p-4 rounded-2xl border border-slate-800 print:border-slate-300 space-y-2">
-            <h4 className="text-xs font-black text-amber-400 print:text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5" />
-              <span>Informations Client (الزبون)</span>
-            </h4>
-            <div className="space-y-1.5 text-xs">
-              <input
-                type="text"
-                placeholder="Nom du Client / Raison Sociale"
-                value={devis.clientName}
-                onChange={(e) => handleUpdateField('clientName', e.target.value)}
-                className="w-full bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2.5 py-1.5 text-white print:text-black font-bold focus:outline-none"
-              />
-              <input
-                type="text"
-                placeholder="Téléphone / WhatsApp"
-                value={devis.clientPhone}
-                onChange={(e) => handleUpdateField('clientPhone', e.target.value)}
-                className="w-full bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2.5 py-1.5 text-white print:text-black font-mono focus:outline-none"
-              />
-              <input
-                type="text"
-                placeholder="Adresse du Chantier / Ville"
-                value={devis.clientAddress}
-                onChange={(e) => handleUpdateField('clientAddress', e.target.value)}
-                className="w-full bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2.5 py-1.5 text-white print:text-black focus:outline-none"
-              />
-            </div>
+          <div className="bg-slate-950 print:bg-slate-100 p-4 rounded-2xl border border-slate-800 print:border-slate-300 space-y-2">
+            <h4 className="text-xs font-bold text-amber-400 print:text-slate-600 uppercase">Client</h4>
+            <input type="text" placeholder="Nom du Client" value={devis.clientName} onChange={(e) => handleUpdateField('clientName', e.target.value)} className="w-full bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2.5 py-1.5 text-white print:text-black font-bold focus:outline-none" />
+            <input type="text" placeholder="Téléphone / WhatsApp" value={devis.clientPhone} onChange={(e) => handleUpdateField('clientPhone', e.target.value)} className="w-full bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2.5 py-1.5 text-white print:text-black font-mono focus:outline-none" />
+            <input type="text" placeholder="Adresse du Chantier" value={devis.clientAddress} onChange={(e) => handleUpdateField('clientAddress', e.target.value)} className="w-full bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2.5 py-1.5 text-white print:text-black focus:outline-none" />
           </div>
-
-          <div className="bg-slate-950 print:bg-slate-50 p-4 rounded-2xl border border-slate-800 print:border-slate-300 space-y-2">
-            <h4 className="text-xs font-black text-amber-400 print:text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
-              <Building className="w-3.5 h-3.5" />
-              <span>Projet & Localisation Chantier</span>
-            </h4>
-            <div className="space-y-1.5 text-xs">
-              <input
-                type="text"
-                placeholder="Intitulé du Projet (ex: Rénovation Faux Plafond Villa)"
-                value={devis.projectTitle}
-                onChange={(e) => handleUpdateField('projectTitle', e.target.value)}
-                className="w-full bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2.5 py-1.5 text-white print:text-black font-bold focus:outline-none"
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <div className="p-2 bg-slate-900 print:bg-white rounded-lg border border-slate-800 print:border-slate-300">
-                  <span className="text-[10px] text-slate-400 print:text-slate-500 block">Pays & Devise :</span>
-                  <span className="font-bold text-slate-200 print:text-black font-mono">
-                    {countryInfo.flag} {countryInfo.nameFr} ({currency})
-                  </span>
-                </div>
-                <div className="p-2 bg-slate-900 print:bg-white rounded-lg border border-slate-800 print:border-slate-300">
-                  <span className="text-[10px] text-slate-400 print:text-slate-500 block">Système de Mesure :</span>
-                  <span className="font-bold text-slate-200 print:text-black uppercase">
-                    {unitSystem === 'metric' ? 'Métrique (m²)' : 'Imperial (sq ft)'}
-                  </span>
-                </div>
-              </div>
-            </div>
+          <div className="bg-slate-950 print:bg-slate-100 p-4 rounded-2xl border border-slate-800 print:border-slate-300 space-y-2">
+            <h4 className="text-xs font-bold text-amber-400 print:text-slate-600 uppercase">Projet</h4>
+            <input type="text" placeholder="Intitulé du Projet" value={devis.projectTitle} onChange={(e) => handleUpdateField('projectTitle', e.target.value)} className="w-full bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2.5 py-1.5 text-white print:text-black font-bold focus:outline-none" />
+            <div className="text-xs text-slate-400 print:text-slate-600 font-mono">{devis.region || region} • {countryInfo.nameFr}</div>
           </div>
         </div>
 
-        {/* Line Items Table */}
-        <div className="space-y-3">
-          <div className="flex justify-between items-center">
-            <h3 className="text-sm font-black text-white print:text-black uppercase tracking-wider flex items-center gap-2">
-              <Receipt className="w-4 h-4 text-amber-400 print:text-slate-700" />
-              <span>Détail des Prestations & Fournitures BTP</span>
-            </h3>
-            <span className="text-xs text-slate-400 print:text-slate-600 font-mono">
-              {devis.items.length} lignes enregistrées
-            </span>
-          </div>
-
-          <div className="overflow-x-auto rounded-2xl border border-slate-800 print:border-slate-300">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-950 print:bg-slate-100 text-slate-300 print:text-slate-700 font-bold border-b border-slate-800 print:border-slate-300">
-                <tr>
-                  <th className="p-3">Désignation des Travaux & Matériaux</th>
-                  <th className="p-3 text-center w-20">Qté</th>
-                  <th className="p-3 text-center w-20">Unité</th>
-                  <th className="p-3 text-right w-28">P.U ({currMeta.symbol})</th>
-                  <th className="p-3 text-right w-32">Total H.T ({currMeta.symbol})</th>
-                  <th className="p-3 text-center w-12 print:hidden">Action</th>
+        {/* Items Table */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="bg-slate-950 print:bg-slate-200 border-b border-slate-800 print:border-slate-400">
+                <th className="text-left p-2.5 font-bold text-amber-400 print:text-slate-700">Désignation</th>
+                <th className="text-center p-2.5 font-bold text-amber-400 print:text-slate-700 w-16">Qté</th>
+                <th className="text-center p-2.5 font-bold text-amber-400 print:text-slate-700 w-16">Unité</th>
+                <th className="text-right p-2.5 font-bold text-amber-400 print:text-slate-700 w-24">P.U</th>
+                <th className="text-right p-2.5 font-bold text-amber-400 print:text-slate-700 w-28">Total</th>
+                <th className="text-center p-2.5 font-bold text-amber-400 print:text-slate-700 w-10 print:hidden"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {devis.items.map((item) => (
+                <tr key={item.id} className="border-b border-slate-800/50 print:border-slate-200">
+                  <td className="p-2.5"><input type="text" value={item.title} onChange={(e) => { const newItems = devis.items.map(i => i.id === item.id ? { ...i, title: e.target.value } : i); setDevis(prev => ({ ...prev, items: newItems })); }} className="w-full bg-transparent text-white print:text-black focus:outline-none font-bold" /></td>
+                  <td className="p-2.5 text-center"><input type="number" value={item.quantity} onChange={(e) => { const qty = parseFloat(e.target.value) || 0; const newItems = devis.items.map(i => i.id === item.id ? { ...i, quantity: qty, total: qty * i.unitPrice, totalTnd: qty * i.unitPriceTnd, totalConverted: qty * i.unitPriceConverted } : i); setDevis(prev => ({ ...prev, items: newItems })); }} className="w-full bg-transparent text-center text-white print:text-black focus:outline-none font-mono" /></td>
+                  <td className="p-2.5 text-center text-slate-400 print:text-slate-600">{item.unit}</td>
+                  <td className="p-2.5 text-right"><input type="number" value={item.unitPrice} onChange={(e) => { const price = parseFloat(e.target.value) || 0; const newItems = devis.items.map(i => i.id === item.id ? { ...i, unitPrice: price, total: item.quantity * price, totalTnd: item.quantity * price, totalConverted: item.quantity * price } : i); setDevis(prev => ({ ...prev, items: newItems })); }} className="w-full bg-transparent text-right text-amber-400 print:text-slate-800 focus:outline-none font-mono font-bold" /></td>
+                  <td className="p-2.5 text-right font-mono text-white print:text-black">{formatPrice(item.totalConverted || item.totalTnd || item.total || 0, currency, country)}</td>
+                  <td className="p-2.5 text-center print:hidden"><button onClick={() => handleRemoveItem(item.id)} className="text-red-400 hover:text-red-300 cursor-pointer"><Trash2 className="w-3.5 h-3.5" /></button></td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 print:divide-slate-200">
-                {devis.items.map((item, idx) => (
-                  <tr key={item.id} className="hover:bg-slate-800/30 print:hover:bg-transparent">
-                    <td className="p-3">
-                      <div className="font-bold text-slate-100 print:text-black">{item.title}</div>
-                      {item.details && (
-                        <div className="text-[10px] text-slate-400 print:text-slate-600 mt-0.5">{item.details}</div>
-                      )}
-                    </td>
-                    <td className="p-3 text-center font-mono font-bold text-slate-200 print:text-black">
-                      {item.quantity}
-                    </td>
-                    <td className="p-3 text-center text-slate-400 print:text-slate-600 font-medium">
-                      {item.unit}
-                    </td>
-                    <td className="p-3 text-right font-mono text-slate-300 print:text-black">
-                      {((item.unitPriceConverted ?? item.unitPriceTnd) || 0).toFixed(currMeta.decimals)}
-                    </td>
-                    <td className="p-3 text-right font-mono font-bold text-amber-400 print:text-black">
-                      {((item.totalConverted ?? item.totalTnd) || 0).toFixed(currMeta.decimals)}
-                    </td>
-                    <td className="p-3 text-center print:hidden">
-                      <button
-                        onClick={() => handleRemoveItem(item.id)}
-                        className="text-slate-500 hover:text-rose-400 p-1 rounded transition-colors cursor-pointer"
-                        title="Supprimer la ligne"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-
-                {devis.items.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="p-8 text-center text-slate-500 print:text-slate-400">
-                      Aucune ligne dans le devis. Utilisez la <strong>Calculatrice</strong> pour insérer les résultats ou ajoutez une ligne ci-dessous.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Quick Add Custom Item Form - Hidden on print */}
-          <div className="bg-slate-950 p-3.5 rounded-2xl border border-slate-800/80 flex flex-wrap items-center gap-2 print:hidden">
-            <input
-              type="text"
-              placeholder="Ajouter une prestation manuelle (ex: Pose échafaudage, Nettoyage fin de chantier)..."
-              value={newItemTitle}
-              onChange={(e) => setNewItemTitle(e.target.value)}
-              className="flex-1 min-w-[200px] bg-slate-900 border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none"
-            />
-            <input
-              type="number"
-              min={1}
-              value={newItemQty}
-              onChange={(e) => setNewItemQty(parseFloat(e.target.value) || 1)}
-              className="w-16 bg-slate-900 border border-slate-700 rounded-xl px-2 py-1.5 text-xs text-white text-center font-mono focus:outline-none"
-              placeholder="Qté"
-            />
-            <select
-              value={newItemUnit}
-              onChange={(e) => setNewItemUnit(e.target.value)}
-              className="bg-slate-900 border border-slate-700 rounded-xl px-2 py-1.5 text-xs text-white font-bold focus:outline-none"
-            >
-              <option value="m²">m²</option>
-              <option value="ml">ml</option>
-              <option value="u">u</option>
-              <option value="forfait">Forfait</option>
-              <option value="jour">Jour</option>
-            </select>
-            <input
-              type="number"
-              min={0}
-              step={0.5}
-              value={newItemPrice}
-              onChange={(e) => setNewItemPrice(parseFloat(e.target.value) || 0)}
-              className="w-24 bg-slate-900 border border-slate-700 rounded-xl px-2 py-1.5 text-xs text-amber-400 font-mono text-right focus:outline-none"
-              placeholder={`Prix (${currMeta.symbol})`}
-            />
-            <button
-              type="button"
-              onClick={handleAddItem}
-              className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1 transition-colors cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5 stroke-[3]" />
-              <span>Ajouter</span>
-            </button>
-          </div>
+              ))}
+              {devis.items.length === 0 && (
+                <tr><td colSpan={6} className="p-8 text-center text-slate-500 print:text-slate-400">Aucune ligne dans le devis. Utilisez la Calculatrice pour insérer les résultats.</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
 
-        {/* Financial Recapitulation & Notes */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-6 pt-4 border-t border-slate-800 print:border-slate-300">
-          
-          {/* Left: Notes & Conditions */}
-          <div className="md:col-span-7 space-y-3 text-xs">
-            <label className="font-bold text-slate-300 print:text-slate-800 block">
-              Conditions Générales d'Exécution & Modalités de Règlement :
-            </label>
+        {/* Totals Section */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Left: Conditions / Notes */}
+          <div className="bg-slate-950 print:bg-slate-100 p-4 rounded-2xl border border-slate-800 print:border-slate-300 space-y-2">
+            <h4 className="text-xs font-bold text-amber-400 print:text-slate-600 uppercase">Conditions & Notes</h4>
             <textarea
-              rows={4}
-              value={devis.notes || "Conditions: Acompte de 40% au démarrage du chantier, 40% à l'avancement des ossatures/plaques, solde de 20% à la réception définitive. Travaux réalisés selon DTU en vigueur."}
+              placeholder="Conditions de règlement, notes..."
+              value={devis.notes || ''}
               onChange={(e) => handleUpdateField('notes', e.target.value)}
-              className="w-full bg-slate-950 print:bg-white border border-slate-800 print:border-slate-300 rounded-2xl p-3.5 text-xs text-white print:text-black font-medium focus:outline-none"
+              className="w-full bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2.5 py-1.5 text-white print:text-black text-xs focus:outline-none min-h-[80px]"
             />
-
-            {/* Signature stamps area on print */}
-            <div className="hidden print:grid grid-cols-2 gap-8 pt-8 text-center text-xs">
-              <div className="border border-slate-300 p-6 rounded-xl min-h-[100px]">
-                <span className="font-bold block mb-1">Cachet & Signature de l'Entreprise</span>
-                <span className="text-[10px] text-slate-500">Bon pour accord et exécution</span>
-              </div>
-              <div className="border border-slate-300 p-6 rounded-xl min-h-[100px]">
-                <span className="font-bold block mb-1">Signature du Client / Maître d'Ouvrage</span>
-                <span className="text-[10px] text-slate-500">Lu et approuvé - Date et Mention manuscrite</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Right: Calculations with Fiscal Details */}
-          <div className="md:col-span-5 bg-slate-950 print:bg-slate-50 p-5 rounded-2xl border border-slate-800 print:border-slate-300 space-y-2.5 text-xs">
-            
-            <div className="flex justify-between text-slate-300 print:text-slate-700">
-              <span>Sous-total Fournitures (Matériaux) :</span>
-              <span className="font-mono font-bold">{subtotalMaterials.toFixed(currMeta.decimals)} {currMeta.symbol}</span>
-            </div>
-
-            <div className="flex justify-between text-slate-300 print:text-slate-700">
-              <span>Sous-total Main d'œuvre (Chantier) :</span>
-              <span className="font-mono font-bold">{subtotalLabor.toFixed(currMeta.decimals)} {currMeta.symbol}</span>
-            </div>
-
-            {/* Discount Input */}
-            <div className="flex justify-between items-center text-slate-300 print:text-slate-700 py-1">
-              <span>Remise Commerciale ({currMeta.symbol}) :</span>
-              <input
-                type="number"
-                value={devis.discount || 0}
-                onChange={(e) => handleUpdateField('discount', parseFloat(e.target.value) || 0)}
-                className="w-24 bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2 py-0.5 text-right font-mono font-bold text-amber-400 print:text-amber-700 text-xs"
-              />
-            </div>
-
-            <div className="flex justify-between text-slate-100 print:text-slate-900 font-black border-t border-slate-900 print:border-slate-200 pt-1.5">
-              <span>TOTAL NET H.T :</span>
-              <span className="font-mono">{netHtSubtotal.toFixed(currMeta.decimals)} {currMeta.symbol}</span>
-            </div>
-
-            {/* Dynamic Country TVA Option */}
-            <div className="flex justify-between items-center text-slate-300 print:text-slate-700 py-1">
-              <span>Taux TVA ({countryInfo.nameFr}) :</span>
-              <select
-                value={activeTvaPercent}
-                onChange={(e) => handleUpdateField('tvaPercent', parseFloat(e.target.value) || 0)}
-                className="bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2 py-0.5 font-mono text-xs font-bold text-white print:text-black"
-              >
-                {countryInfo.vatRates.map((vr) => (
-                  <option key={vr.rate} value={vr.rate}>
-                    {vr.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {activeTvaPercent > 0 && (
-              <div className="flex justify-between text-slate-300 print:text-slate-700">
-                <span>Montant TVA ({activeTvaPercent}%) :</span>
-                <span className="font-mono font-bold text-slate-200 print:text-slate-800">
-                  +{tvaAmount.toFixed(currMeta.decimals)} {currMeta.symbol}
-                </span>
-              </div>
-            )}
-
-            {/* Timbre Fiscal Option */}
-            <div className="flex justify-between items-center text-slate-300 print:text-slate-700 py-1">
-              <span>Timbre Fiscal ({countryInfo.timbreLabel}) :</span>
-              <button
-                type="button"
-                onClick={() => setIncludeTimbre(!includeTimbre)}
-                className={`px-2 py-0.5 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
-                  includeTimbre ? 'bg-amber-500/20 border-amber-500 text-amber-400' : 'bg-slate-900 border-slate-700 text-slate-400'
-                }`}
-              >
-                {includeTimbre ? `+${countryInfo.timbreFiscalDefault.toFixed(currMeta.decimals)} Inclus` : 'Exonéré'}
-              </button>
-            </div>
-
-            {/* Retenue de Garantie Option */}
-            <div className="flex justify-between items-center text-slate-300 print:text-slate-700 py-1">
-              <span>Retenue de Garantie :</span>
+            <div className="flex items-center gap-2">
+              <label className="text-[11px] text-slate-400">Retenue de Garantie :</label>
               <select
                 value={retenueGarantiePercent}
-                onChange={(e) => setRetenueGarantiePercent(parseFloat(e.target.value) || 0)}
-                className="bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2 py-0.5 font-mono text-xs font-bold text-white print:text-black"
+                onChange={(e) => setRetenueGarantiePercent(Number(e.target.value))}
+                className="bg-slate-900 print:bg-white border border-slate-800 print:border-slate-300 rounded-lg px-2 py-1 text-white print:text-black text-xs focus:outline-none"
               >
-                <option value={0}>0% (Sans Retenue)</option>
-                <option value={5}>5% (Chantiers Standard BTP)</option>
-                <option value={10}>10% (Marchés Publics & Tertiaires)</option>
+                <option value={0}>0%</option>
+                <option value={5}>5%</option>
+                <option value={10}>10%</option>
               </select>
             </div>
-
-            {/* Grand Total TTC */}
-            <div className="border-t border-slate-800 print:border-slate-300 pt-2 flex justify-between items-center">
-              <span className="text-sm font-black text-amber-400 print:text-amber-800 uppercase">TOTAL GÉNÉRAL TTC :</span>
-              <span className="text-lg font-black text-amber-400 print:text-amber-800 font-mono">
-                {totalTtc.toFixed(currMeta.decimals)} <span className="text-xs text-slate-400">{currMeta.symbol}</span>
-              </span>
-            </div>
-
-            {/* Net à Payer after Retenue */}
-            {retenueGarantiePercent > 0 && (
-              <div className="border-t border-slate-800 print:border-slate-300 pt-1.5 flex justify-between items-center text-emerald-400 print:text-emerald-700">
-                <span className="text-xs font-black uppercase">NET À PAYER (APRÈS RETENUE) :</span>
-                <span className="text-base font-black font-mono">
-                  {netAPayer.toFixed(currMeta.decimals)} <span className="text-xs text-slate-400">{currMeta.symbol}</span>
-                </span>
-              </div>
-            )}
-
           </div>
 
+          {/* Right: Totals */}
+          <div className="bg-slate-950 print:bg-slate-100 p-4 rounded-2xl border border-slate-800 print:border-slate-300">
+            <div className="space-y-1.5 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Sous-total Fournitures (Matériaux) :</span>
+                <span className="font-mono text-white print:text-black">{formatPrice(subtotalMaterials, currency, country)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Sous-total Main d'œuvre (Chantier) :</span>
+                <span className="font-mono text-white print:text-black">{formatPrice(subtotalLabor, currency, country)}</span>
+              </div>
+              {discountAmount > 0 && (
+                <div className="flex justify-between text-amber-400">
+                  <span>Remise / Rabais :</span>
+                  <span className="font-mono">-{formatPrice(discountAmount, currency, country)}</span>
+                </div>
+              )}
+              <div className="flex justify-between font-bold pt-1 border-t border-slate-800 print:border-slate-300">
+                <span className="text-slate-300">TOTAL NET H.T :</span>
+                <span className="font-mono text-white print:text-black">{formatPrice(netHtSubtotal, currency, country)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">TVA ({activeTvaPercent}%) :</span>
+                <span className="font-mono text-white print:text-black">{formatPrice(tvaAmount, currency, country)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Timbre Fiscal :</span>
+                <span className="font-mono text-white print:text-black">{formatPrice(timbreAmount, currency, country)}</span>
+              </div>
+              {retenueGarantiePercent > 0 && (
+                <>
+                  <div className="flex justify-between text-rose-400">
+                    <span>Retenue de Garantie ({retenueGarantiePercent}%) :</span>
+                    <span className="font-mono">-{formatPrice(retenueAmount, currency, country)}</span>
+                  </div>
+                  <div className="flex justify-between font-black pt-1 border-t border-slate-800 print:border-slate-300 text-emerald-400">
+                    <span>NET À PAYER (APRÈS RETENUE) :</span>
+                    <span className="font-mono text-sm">{formatPrice(netAPayer, currency, country)}</span>
+                  </div>
+                </>
+              )}
+              <div className="flex justify-between font-black pt-1 border-t border-slate-800 print:border-slate-300 text-amber-400 text-sm">
+                <span>TOTAL GÉNÉRAL TTC :</span>
+                <span className="font-mono">{formatPrice(totalTtc, currency, country)}</span>
+              </div>
+            </div>
+          </div>
         </div>
 
+        {/* Signature Section */}
+        <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-800 print:border-slate-300">
+          <div className="border border-slate-700 print:border-slate-400 rounded-xl p-4 min-h-[80px]">
+            <p className="text-[10px] text-slate-500 print:text-slate-600 text-center">Cachet & Signature de l'Entreprise</p>
+          </div>
+          <div className="border border-slate-700 print:border-slate-400 rounded-xl p-4 min-h-[80px]">
+            <p className="text-[10px] text-slate-500 print:text-slate-600 text-center">Signature du Client / Maître d'Ouvrage</p>
+          </div>
+        </div>
       </div>
 
       {/* History Modal */}
       {showHistoryModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4">
-          <div className="bg-slate-900 rounded-3xl p-6 border border-slate-800 max-w-xl w-full space-y-4 shadow-2xl">
-            <div className="flex justify-between items-center border-b border-slate-800 pb-3">
-              <h3 className="text-base font-black text-white flex items-center gap-2">
-                <FolderOpen className="w-5 h-5 text-amber-400" />
-                <span>Historique des Devis Enregistrés</span>
-              </h3>
-              <button 
-                onClick={() => setShowHistoryModal(false)} 
-                className="text-slate-400 hover:text-white font-bold text-sm cursor-pointer"
-              >
-                ✕
-              </button>
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#131b2e] rounded-3xl p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto border border-slate-700">
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-lg font-black text-white">Historique des Devis</h3>
+              <button onClick={() => setShowHistoryModal(false)} className="text-slate-400 hover:text-white"><span className="text-2xl">&times;</span></button>
             </div>
-
-            <div className="space-y-2 max-h-[300px] overflow-y-auto">
-              {devisHistory.map(dh => (
-                <div key={dh.id} className="bg-slate-950 p-3 rounded-2xl border border-slate-800 flex items-center justify-between">
-                  <div>
-                    <div className="font-bold text-white text-xs">{dh.clientName || 'Client sans nom'} - {dh.projectTitle || 'Projet'}</div>
-                    <div className="text-[10px] text-slate-400 font-mono">{dh.reference} • {dh.date} • {dh.items.length} articles</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-mono font-bold text-amber-400">
-                      {dh.totalTnd.toFixed(2)} {currMeta.symbol}
-                    </span>
-                    <button
-                      onClick={() => { onLoadFromHistory(dh); setShowHistoryModal(false); }}
-                      className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl transition-colors cursor-pointer"
-                    >
-                      Ouvrir
-                    </button>
-                    <button
-                      onClick={() => onDeleteFromHistory(dh.id)}
-                      className="p-1 text-rose-400 hover:bg-rose-500/10 rounded-lg transition-colors cursor-pointer"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+            <div className="space-y-2">
+              {devisHistory.length === 0 && <p className="text-slate-400 text-sm">Aucun devis sauvegardé.</p>}
+              {devisHistory.map((h, idx) => (
+                <div key={h.id || idx} className="bg-slate-900 p-3 rounded-xl flex justify-between items-center">
+                  <div><div className="text-sm font-bold text-white">{h.projectTitle || 'Sans titre'}</div><div className="text-xs text-slate-400">{h.clientName} • {h.date}</div></div>
+                  <div className="flex gap-2">
+                    <button onClick={() => { onLoadFromHistory(h); setShowHistoryModal(false); }} className="px-3 py-1 bg-amber-500 text-slate-950 text-xs font-bold rounded-lg cursor-pointer">Charger</button>
+                    <button onClick={() => onDeleteFromHistory(h.id)} className="px-3 py-1 bg-red-500/20 text-red-400 text-xs font-bold rounded-lg cursor-pointer">Supprimer</button>
                   </div>
                 </div>
               ))}
-
-              {devisHistory.length === 0 && (
-                <p className="text-xs text-slate-500 text-center py-6">Aucun devis enregistré dans l'historique.</p>
-              )}
             </div>
           </div>
         </div>

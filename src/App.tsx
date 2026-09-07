@@ -18,7 +18,6 @@ import { FloatingAiWidget } from './components/FloatingAiWidget';
 import { ApiSyncModal } from './components/ApiSyncModal';
 import { AuthModal } from './components/AuthModal';
 import { CatalogUploadModal } from './components/CatalogUploadModal';
-import { VisualDevisWizardModal } from './components/VisualDevisWizardModal';
 import { SupplierDashboardModal } from './components/SupplierDashboardModal';
 import { LivePriceIndexWidget } from './components/LivePriceIndexWidget';
 import { AdminDashboardModal } from './components/AdminDashboardModal';
@@ -31,6 +30,11 @@ import {
 import { DEFAULT_MARKET_RATES } from './data/marketRates';
 import { restoreSession, logout, listDevis, createDevis, updateDevis, deleteDevis, listPrices } from './lib/api';
 import { buildPriceMap, mergeRates } from './utils/priceLookup';
+import {
+  normalizeDevisFromServer, toServerDevisPayload, makeDevisReference,
+  isDefaultCompanyName,
+  DEFAULT_COMPANY_NAME, DEFAULT_COMPANY_PHONE, DEFAULT_COMPANY_MATRICULE, DEFAULT_COMPANY_ADDRESS,
+} from './utils/devisFields';
 import { COUNTRIES_CONFIG } from './data/countryConfig';
 import { 
   INITIAL_PROJECTS, INITIAL_ARTISANS, INITIAL_MARKETPLACE_PRODUCTS, 
@@ -42,6 +46,82 @@ declare global {
   interface Window {
     KonstrivoState?: any;
   }
+}
+
+/** References already saved in the local Devis history — fed to
+ *  makeDevisReference() so a NEW Devis never reuses one across reloads. */
+function collectSavedDevisReferences(): string[] {
+  try {
+    const saved = localStorage.getItem('konstrivo_devis_history');
+    if (!saved) return [];
+    return (JSON.parse(saved) as any[])
+      .map((d: any) => d?.reference)
+      .filter((r: any): r is string => typeof r === 'string' && r.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/** Today's calendar date in Tunisia (Africa/Tunis, UTC+1, no DST) as YYYY-MM-DD —
+ *  used for every NEW Devis. Falls back to the device's UTC date if Intl is
+ *  unavailable, so the field can never be empty. */
+function todayLocalIso(): string {
+  try {
+    const f = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Tunis',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    return f.format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+/**
+ * Build a fresh blank Devis document — used for BOTH the initial document and
+ * every "Nouveau Devis". Only reference + date are regenerated on each call:
+ *  - reference: makeDevisReference() guarantees a NEW DEV-<year>-XXXX that
+ *    never reuses a reference already saved in the local history nor one
+ *    issued earlier in this session;
+ *  - date: today's local (Tunisia) calendar date as YYYY-MM-DD.
+ * Every other field matches the original initializer exactly.
+ */
+function createBlankDevis(): DevisDocument {
+  const countryCfg = COUNTRIES_CONFIG['TN'];
+  return {
+    id: `dev-${Date.now()}`,
+    reference: makeDevisReference(collectSavedDevisReferences()),
+    date: todayLocalIso(),
+    clientName: '',
+    clientPhone: '',
+    clientAddress: '',
+    projectTitle: '',
+    region: 'Tunis Grand',
+    country: 'TN',
+    currency: 'TND',
+    // company defaults (may be overridden when currentUser is available)
+    companyName: DEFAULT_COMPANY_NAME,
+    companyPhone: DEFAULT_COMPANY_PHONE,
+    companyMatricule: DEFAULT_COMPANY_MATRICULE,
+    companyAddress: DEFAULT_COMPANY_ADDRESS,
+    items: [],
+    subtotalMaterials: 0,
+    subtotalLabor: 0,
+    discount: 0,
+    subtotalMaterialsTnd: 0,
+    subtotalLaborTnd: 0,
+    discountTnd: 0,
+    tvaPercent: countryCfg.defaultVatRate,
+    timbreFiscalTnd: countryCfg.timbreFiscalDefault,
+    retenueGarantiePercent: 0,
+    timbreFiscal: countryCfg.timbreFiscalDefault,
+    totalTnd: 0,
+    total: 0,
+    notes: 'Devis valable 30 jours. Conditions: 50% acompte à la commande, solde à la livraison.',
+    status: 'brouillon'
+  } as DevisDocument;
 }
 
 export default function App() {
@@ -80,7 +160,6 @@ export default function App() {
     return false;
   });
   const [showCatalogModal, setShowCatalogModal] = useState<boolean>(false);
-  const [showWizardModal, setShowWizardModal] = useState<boolean>(false);
   const [showSupplierModal, setShowSupplierModal] = useState<boolean>(false);
   const [showAdminModal, setShowAdminModal] = useState<boolean>(false);
 
@@ -147,32 +226,37 @@ export default function App() {
   const [ratesSyncNonce, setRatesSyncNonce] = useState(0);
   const skipRatesPersistRef = useRef(false);
 
-  // Active Devis
-  const [currentDevis, setCurrentDevis] = useState<DevisDocument>(() => {
-    const countryCfg = COUNTRIES_CONFIG['TN'];
-    return {
-      id: `dev-${Date.now()}`,
-      reference: `DEV-2026-${Math.floor(1000 + Math.random() * 9000)}`,
-      date: new Date().toLocaleDateString('fr-TN'),
-      clientName: '',
-      clientPhone: '',
-      clientAddress: '',
-      projectTitle: '',
-      region: 'Tunis Grand',
-      country: 'TN',
-      currency: 'TND',
-      items: [],
-      subtotalMaterialsTnd: 0,
-      subtotalLaborTnd: 0,
-      discountTnd: 0,
-      tvaPercent: countryCfg.defaultVatRate,
-      timbreFiscalTnd: countryCfg.timbreFiscalDefault,
-      retenueGarantiePercent: 0,
-      totalTnd: 0,
-      notes: 'Devis valable 30 jours. Conditions: 50% acompte à la commande, solde à la livraison.',
-      status: 'brouillon'
-    };
-  });
+  // Active Devis — built by createBlankDevis() so the very first document and
+  // every "Nouveau Devis" share the exact same shape (fresh reference + today's
+  // local Tunisia date). Modify/load/add-item paths never touch reference/date.
+  const [currentDevis, setCurrentDevis] = useState<DevisDocument>(() => createBlankDevis());
+
+  // When a user session is restored and contains company info, apply it to the
+  // current Devis ONLY when the Devis fields are truly empty (no user data).
+  // User's existing Devis data has priority — defaults are NOT placeholders
+  // to be overwritten; they remain fallback only when no data exists.
+  useEffect(() => {
+    if (!currentUser) return;
+    setCurrentDevis(prev => {
+      const next = { ...prev } as any;
+      // Fill from currentUser when the field is empty OR still holds the
+      // built-in default (defaults are fallback, not user data) — never
+      // overwrite values the user typed or loaded themselves.
+      if (isDefaultCompanyName(prev.companyName)) {
+        next.companyName = currentUser.companyName || currentUser.company || prev.companyName;
+      }
+      if (!prev.companyPhone || prev.companyPhone === DEFAULT_COMPANY_PHONE) {
+        next.companyPhone = currentUser.phone || prev.companyPhone;
+      }
+      if (!prev.companyMatricule || prev.companyMatricule === DEFAULT_COMPANY_MATRICULE) {
+        next.companyMatricule = currentUser.matriculeFiscale || currentUser.taxNumber || prev.companyMatricule;
+      }
+      if (!prev.companyAddress || prev.companyAddress === DEFAULT_COMPANY_ADDRESS) {
+        next.companyAddress = currentUser.company || currentUser.region || prev.companyAddress;
+      }
+      return next as DevisDocument;
+    });
+  }, [currentUser]);
 
   // Devis History
   const [devisHistory, setDevisHistory] = useState<DevisDocument[]>(() => {
@@ -348,6 +432,13 @@ export default function App() {
     setRatesSyncNonce(n => n + 1);
   };
 
+  /** Create a brand-new empty Devis: fresh reference + today's local (Tunisia)
+   *  date, then jump straight to the Devis view. */
+  const handleNewDevis = () => {
+    setCurrentDevis(createBlankDevis());
+    setActiveTab('devis');
+  };
+
   const handleAddToDevis = (item: DevisItem) => {
     setCurrentDevis(prev => ({
       ...prev,
@@ -368,20 +459,28 @@ export default function App() {
       try {
         // Local-created IDs start with 'dev-'; use them as idempotency keys when creating.
         if (devisToSave.id && devisToSave.id.startsWith('dev-')) {
-          const created = await createDevis(devisToSave, devisToSave.id);
+          // Phase 1 — explicit client→server payload mapping (reference, date,
+          // status enum, numeric totals) so no user-visible field is dropped.
+          const created = await createDevis(toServerDevisPayload(devisToSave) as any, devisToSave.id);
+          const normalizedCreated = normalizeDevisFromServer(created, currentUser);
           setDevisHistory(prev => {
             const filtered = prev.filter(d => d.id !== devisToSave.id);
-            return [created, ...filtered];
+            return [normalizedCreated, ...filtered];
           });
-          setCurrentDevis(created as any);
+          setCurrentDevis(normalizedCreated);
           return;
         }
 
         // Otherwise assume this maps to a server-side record and perform optimistic update.
-        const payload = { ...devisToSave, expectedVersion: devisToSave.version ?? (devisToSave as any).expectedVersion };
+        // Phase 1 — same mapping for the update path (plus the optimistic version).
+        const payload = {
+          ...toServerDevisPayload(devisToSave),
+          version: devisToSave.version ?? (devisToSave as any).expectedVersion,
+        };
         const updated = await updateDevis(devisToSave.id, payload);
-        setDevisHistory(prev => prev.map(d => d.id === (updated as any).id ? (updated as any) : d));
-        setCurrentDevis(updated as DevisDocument);
+        const normalizedUpdated = normalizeDevisFromServer(updated, currentUser);
+        setDevisHistory(prev => prev.map(d => d.id === (normalizedUpdated as any).id ? normalizedUpdated : d));
+        setCurrentDevis(normalizedUpdated as DevisDocument);
         return;
       } catch (err) {
         // sync failed — continue to save locally
@@ -403,7 +502,9 @@ export default function App() {
   };
 
   const handleLoadFromHistory = (dh: DevisDocument) => {
-    setCurrentDevis(dh);
+    // Phase 1 — normalize on load: YYYY-MM-DD date, reference fallback,
+    // company fields (currentUser → defaults), numeric coercion of totals.
+    setCurrentDevis(normalizeDevisFromServer(dh as any, currentUser));
     setActiveTab('devis');
   };
 
@@ -432,7 +533,10 @@ export default function App() {
         if (!active) return;
         setDevisHistory(prev => {
           const map = new Map<string, any>(prev.map(d => [d.id, d]));
-          for (const s of serverDevis) map.set(s.id, s);
+          // Phase 1 — normalize each server Devis (items attached, numeric
+          // totals, reference fallback, YYYY-MM-DD date, client status enum,
+          // company fields) before it enters the shared history.
+          for (const s of serverDevis) map.set(s.id, normalizeDevisFromServer(s, currentUser));
           return Array.from(map.values()).sort((a: any, b: any) => new Date(b.createdAt || b.date).getTime() - new Date(a.createdAt || a.date).getTime());
         });
       } catch (err) {
@@ -463,7 +567,6 @@ export default function App() {
         onOpenSyncModal={() => setShowSyncModal(true)}
         onOpenAuthModal={() => setShowAuthModal(true)}
                 onOpenAdminModal={openAdminModal}
-        onOpenWizardModal={() => setShowWizardModal(true)}
         onOpenSupplierModal={() => setShowSupplierModal(true)}
         currentUser={currentUser}
         isOffline={isOffline}
@@ -565,6 +668,7 @@ export default function App() {
             devis={currentDevis}
             setDevis={setCurrentDevis}
             devisHistory={devisHistory}
+            onNewDevis={handleNewDevis}
             onSaveDevisHistory={handleSaveDevisHistory}
             onLoadFromHistory={handleLoadFromHistory}
             onDeleteFromHistory={handleDeleteFromHistory}
@@ -674,18 +778,6 @@ export default function App() {
           lang={lang}
           country={country}
           currency={currency}
-        />
-      )}
-
-      {/* Visual Multi-Step Request Wizard Modal */}
-      {showWizardModal && (
-        <VisualDevisWizardModal
-          isOpen={showWizardModal}
-          onClose={() => setShowWizardModal(false)}
-          lang={lang}
-          country={country}
-          currency={currency}
-          userRegion={region}
         />
       )}
 

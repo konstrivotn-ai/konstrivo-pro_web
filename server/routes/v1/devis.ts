@@ -86,6 +86,11 @@ router.post('/',
       const devis = await (devisRepository as any).create({
         companyId,
         createdByUserId: req.user!.uid,
+        // Phase 1 — Devis mapping: pass through the client reference & date
+        // (they were previously dropped here, so every saved Devis lost them).
+        reference: body.reference,
+        date: body.date,
+        grandTotalTnd: body.totalTnd ?? body.total,
         clientName: body.clientName,
         clientPhone: body.clientPhone,
         clientAddress: body.clientAddress,

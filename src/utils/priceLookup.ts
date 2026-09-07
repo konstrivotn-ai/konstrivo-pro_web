@@ -1,4 +1,5 @@
 import { MaterialRate } from '../types';
+import { DEFAULT_MARKET_RATES } from '../data/marketRates';
 
 /**
  * Step 5 — Material ID bridge.
@@ -63,14 +64,44 @@ export const CANONICAL_PLACO_CODE_ALIASES: Record<string, string | string[]> = {
   'laine-verre-12': 'laine_de_verre_50mm',
 };
 
+// Additional, minimal non-PLACO aliases discovered during audit.
+// These map a canonical hyphenated `materials.code` to the legacy calculator
+// id the calculators actually look up. Only add explicit mappings where a
+// semantic & dimensional match exists (no price invention).
+export const CANONICAL_ADDITIONAL_ALIASES: Record<string, string | string[]> = {
+  // Plinthes used by the Carrelage calculator map to the canonical MDF plinthes
+  // row (2.4m pieces) in DEFAULT_MARKET_RATES.
+  'plinthes-mdf-decor-2-4m': 'plinthes_carrelage',
+};
+
 /**
  * Expand a server-side price key into the business id(s) the Calculator looks
  * up. Keys without a canonical alias pass through unchanged.
  */
 export function priceKeysFor(key: string): string[] {
   const alias = CANONICAL_PLACO_CODE_ALIASES[key];
-  if (!alias) return [key];
-  return Array.isArray(alias) ? alias : [alias];
+  if (alias) return Array.isArray(alias) ? alias : [alias];
+  const alias2 = CANONICAL_ADDITIONAL_ALIASES[key];
+  if (alias2) return Array.isArray(alias2) ? alias2 : [alias2];
+
+  // Generic, safe fallback for non-PLACO trades:
+  // Only transform hyphenated canonical keys to underscores when the
+  // resulting legacy slug exists in the in-code catalog or appears as a
+  // target alias for PLACO. This avoids converting unrelated hyphenated
+  // identifiers (UUIDs, opaque external ids, etc.).
+  if (key.includes('-')) {
+    const candidate = key.replace(/-/g, '_');
+    const knownIds = new Set(DEFAULT_MARKET_RATES.map(r => r.id));
+    // collect alias targets from the explicit PLACO alias table
+    const aliasTargets = new Set<string>();
+    for (const v of Object.values(CANONICAL_PLACO_CODE_ALIASES)) {
+      if (Array.isArray(v)) for (const s of v) aliasTargets.add(s);
+      else aliasTargets.add(v);
+    }
+    if (knownIds.has(candidate) || aliasTargets.has(candidate)) return [candidate];
+  }
+
+  return [key];
 }
 
 /**

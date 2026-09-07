@@ -1,6 +1,115 @@
 import { getDatabase } from '../db/client';
 import { devis, devisItems, idempotencyKeys } from '../db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
+
+// ── Phase 1 — Devis client↔server field mapping helpers ────────────────────
+// Small, explicit mapping only (no schema/API changes): the client
+// DevisDocument uses different names than the devis/devis_items columns and
+// Postgres `numeric` columns come back as strings.
+
+/** Coerce numeric strings / numbers to a finite number (null otherwise). */
+function toNum(value: any): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** `numeric(...)` columns are string-mode in Drizzle — serialize numbers. */
+function numCol(value: any): any {
+  if (value === null || value === undefined) return null;
+  return String(value);
+}
+
+/** Normalize any provided date to `YYYY-MM-DD` (undefined when invalid). */
+function isoDateOnly(value: any): string | undefined {
+  if (value === null || value === undefined || value === '') return undefined;
+  if (value instanceof Date) return isNaN(value.getTime()) ? undefined : value.toISOString().slice(0, 10);
+  const s = String(value).trim();
+  if (!s) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const legacy = s.match(/^(\d{1,2})[/.](\d{1,2})[/.](\d{4})$/);
+  if (legacy) return `${legacy[3]}-${legacy[2].padStart(2, '0')}-${legacy[1].padStart(2, '0')}`;
+  const parsed = new Date(s);
+  return isNaN(parsed.getTime()) ? undefined : parsed.toISOString().slice(0, 10);
+}
+
+// Status enums: client (brouillon/envoye/valide) ↔ server (draft/sent/validated).
+const CLIENT_STATUS_TO_SERVER: Record<string, string> = { brouillon: 'draft', envoye: 'sent', valide: 'validated' };
+const SERVER_STATUS_TO_CLIENT: Record<string, string> = { draft: 'brouillon', sent: 'envoye', validated: 'valide' };
+
+/** Client DevisItem → devis_items columns (names differ between the two sides). */
+function mapItemToServerRow(it: any) {
+  return {
+    materialId: it?.materialId || null,
+    trade: it?.trade || null,
+    title: it?.title || null,
+    descriptionSnapshot: it?.descriptionSnapshot ?? it?.details ?? null,
+    unit: it?.unit || null,
+    exactCalculatedQuantity: numCol(toNum(it?.exactCalculatedQuantity) ?? toNum(it?.quantity) ?? 0),
+    wasteIncludedQuantity: numCol(toNum(it?.wasteIncludedQuantity) ?? toNum(it?.quantity) ?? 0),
+    billableQuantity: numCol(toNum(it?.billableQuantity) ?? toNum(it?.quantity) ?? 0),
+    unitPriceAppliedTnd: numCol(toNum(it?.unitPriceAppliedTnd) ?? toNum(it?.unitPriceTnd) ?? toNum(it?.unitPrice) ?? 0),
+    totalPriceTnd: numCol(toNum(it?.totalPriceTnd) ?? toNum(it?.totalTnd) ?? toNum(it?.total) ?? 0),
+    isCustomAdded: !!it?.isCustomAdded,
+    packageDetailsSnapshot: it?.packageDetailsSnapshot ?? null,
+    supplierReference: it?.supplierReference ?? null,
+  };
+}
+
+/** devis_items row → client DevisItem shape (numeric coercion included). */
+function mapItemRowToClient(it: any) {
+  const quantity =
+    toNum(it?.billableQuantity) ??
+    toNum(it?.quantity) ??
+    toNum(it?.wasteIncludedQuantity) ??
+    toNum(it?.exactCalculatedQuantity) ??
+    0;
+  const unitPrice = toNum(it?.unitPriceAppliedTnd) ?? toNum(it?.unitPriceTnd) ?? 0;
+  const total = toNum(it?.totalPriceTnd) ?? toNum(it?.totalTnd) ?? quantity * unitPrice;
+  return {
+    id: it?.id,
+    materialId: it?.materialId || undefined,
+    trade: it?.trade || 'placo',
+    title: it?.title || '',
+    quantity,
+    unit: it?.unit || 'u',
+    unitPrice,
+    total,
+    unitPriceTnd: unitPrice,
+    totalTnd: total,
+    unitPriceConverted: unitPrice,
+    totalConverted: total,
+    details: it?.descriptionSnapshot || it?.details || undefined,
+    isCustomAdded: !!it?.isCustomAdded,
+  };
+}
+
+/**
+ * devis row (+ its items) → client DevisDocument shape:
+ * reference fallback to devisNumber, YYYY-MM-DD date, client status enum,
+ * numeric coercion of totals/tax and mapped items. Unknown server fields are
+ * preserved so nothing is lost downstream.
+ */
+function mapDevisRowToClient(row: any, items?: any[]) {
+  const clientItems = (items || []).map(mapItemRowToClient);
+  const itemsSum = clientItems.reduce((acc, it) => acc + (it.totalTnd || 0), 0);
+  // Discount is not a DB column; it is recovered from the stored net-HT
+  // snapshot (subtotal_before_tax_tnd = raw items total − discount).
+  const netHt = toNum(row?.subtotalBeforeTaxTnd);
+  return {
+    ...row,
+    reference: row?.reference || row?.devisNumber,
+    date: isoDateOnly(row?.date) || row?.date || null,
+    tvaPercent: toNum(row?.taxRatePercent) ?? undefined,
+    subtotalMaterials: toNum(row?.totalMaterialsCostTnd) ?? row?.subtotalMaterials,
+    subtotalLabor: toNum(row?.totalLaborCostTnd) ?? row?.subtotalLabor,
+    discount: netHt !== null ? Math.max(0, itemsSum - netHt) : toNum(row?.discount) ?? 0,
+    totalTnd: toNum(row?.grandTotalTnd) ?? 0,
+    total: toNum(row?.grandTotalTnd) ?? 0,
+    status: SERVER_STATUS_TO_CLIENT[row?.status] || 'brouillon',
+    items: clientItems,
+  };
+}
 
 async function generateDevisNumber(db: any) {
   const year = new Date().getFullYear();
@@ -20,7 +129,8 @@ export async function findDevisById(id: string) {
   const d = await db.select().from(devis).where(eq(devis.id, id)).limit(1);
   if (!d || d.length === 0) return undefined;
   const items = await db.select().from(devisItems).where(eq(devisItems.devisId, id));
-  return { ...d[0], items };
+  items.sort((a: any, b: any) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0));
+  return mapDevisRowToClient(d[0], items);
 }
 
 export async function listDevis(filters: any) {
@@ -37,7 +147,27 @@ export async function listDevis(filters: any) {
   const limit = filters.limit || 20;
   const start = (page - 1) * limit;
   const data = all.slice(start, start + limit);
-  return { data, page, limit, total };
+  // Phase 1 mapping — attach the mapped items of the returned page (single
+  // batched query) so items are never lost when the client lists/loads Devis.
+  let itemsByDevis = new Map<string, any[]>();
+  if (data.length > 0) {
+    const ids = data.map((d: any) => d.id);
+    const itemRows = await db.select().from(devisItems).where(inArray(devisItems.devisId, ids));
+    for (const it of itemRows) {
+      const arr = itemsByDevis.get(it.devisId) || [];
+      arr.push(it);
+      itemsByDevis.set(it.devisId, arr);
+    }
+  }
+  return {
+    data: data.map((d: any) => mapDevisRowToClient(
+      d,
+      (itemsByDevis.get(d.id) || []).sort((a: any, b: any) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0)),
+    )),
+    page,
+    limit,
+    total,
+  };
 }
 
 export async function createDevis(input: any) {
@@ -47,12 +177,25 @@ export async function createDevis(input: any) {
   try {
     const devisNumber = await generateDevisNumber(db);
     const now = new Date();
+    const itemsInput: any[] = Array.isArray(input.items) ? input.items : [];
+
+    // Totals snapshot — SAME formula as the client (raw − discount → TVA),
+    // used only when the client did not provide its own grand total.
+    const rawSum = itemsInput.reduce((acc, it) =>
+      acc + (toNum(it?.totalTnd) ?? toNum(it?.totalPriceTnd) ?? toNum(it?.total) ?? 0), 0);
+    const discount = toNum(input.discount) ?? 0;
+    const netHt = Math.max(0, rawSum - discount);
+    const tvaPercent = toNum(input.tvaPercent) ?? 0;
+    const taxAmount = tvaPercent > 0 ? (netHt * tvaPercent) / 100 : 0;
+    const timbre = toNum(input.timbreFiscal) ?? 0;
+    const grandTotal = toNum(input.grandTotalTnd) ?? toNum(input.totalTnd) ?? toNum(input.total) ?? (netHt + taxAmount + timbre);
+
     const [inserted] = await tx.insert(devis).values({
       companyId: input.companyId,
       createdByUserId: input.createdByUserId,
       devisNumber,
       reference: input.reference || devisNumber,
-      date: input.date,
+      date: isoDateOnly(input.date),
       clientName: input.clientName,
       clientPhone: input.clientPhone,
       clientAddress: input.clientAddress,
@@ -60,37 +203,27 @@ export async function createDevis(input: any) {
       country: input.country,
       currency: input.currency,
       region: input.region,
-      totalMaterialsCostTnd: input.totalMaterialsCostTnd,
-      totalLaborCostTnd: input.totalLaborCostTnd,
-      taxRatePercent: input.tvaPercent,
-      taxAmountTnd: input.tvaAmount,
-      grandTotalTnd: input.grandTotal,
-      status: input.status || 'draft',
+      totalMaterialsCostTnd: numCol(toNum(input.subtotalMaterialsTnd) ?? toNum(input.totalMaterialsCostTnd)),
+      totalLaborCostTnd: numCol(toNum(input.subtotalLaborTnd) ?? toNum(input.totalLaborCostTnd)),
+      subtotalBeforeTaxTnd: numCol(netHt),
+      taxRatePercent: numCol(toNum(input.tvaPercent) ?? toNum(input.taxRatePercent)),
+      taxAmountTnd: numCol(toNum(input.tvaAmount) ?? taxAmount),
+      grandTotalTnd: numCol(grandTotal),
+      status: CLIENT_STATUS_TO_SERVER[input.status] || input.status || 'draft',
       createdAt: now,
       updatedAt: now,
       version: 1,
       isDeleted: false,
     }).returning();
 
-    const items = input.items || [];
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
+    for (let i = 0; i < itemsInput.length; i++) {
+      // Phase 1 mapping — client item names → devis_items columns
+      // (quantity → billable_quantity, unitPriceTnd → unit_price_applied_tnd,
+      // totalTnd → total_price_tnd, details → description_snapshot).
       await tx.insert(devisItems).values({
         devisId: inserted.id,
         lineNumber: i + 1,
-        materialId: it.materialId,
-        trade: it.trade,
-        title: it.title,
-        descriptionSnapshot: it.descriptionSnapshot,
-        unit: it.unit,
-        exactCalculatedQuantity: it.exactCalculatedQuantity,
-        wasteIncludedQuantity: it.wasteIncludedQuantity,
-        billableQuantity: it.billableQuantity,
-        unitPriceAppliedTnd: it.unitPriceAppliedTnd,
-        totalPriceTnd: it.totalPriceTnd,
-        isCustomAdded: it.isCustomAdded,
-        packageDetailsSnapshot: it.packageDetailsSnapshot,
-        supplierReference: it.supplierReference,
+        ...mapItemToServerRow(itemsInput[i]),
         createdAt: now,
         updatedAt: now,
         version: 1,
@@ -120,7 +253,63 @@ export async function updateDevis(id: string, patch: any, expectedVersion?: numb
     const err: any = new Error(`Version conflict: expected ${expectedVersion}, server has ${cur.version}`);
     err.statusCode = 409; err.code = 'CONFLICT'; throw err;
   }
-  const [updated] = await db.update(devis).set({ ...patch, updatedAt: new Date(), version: (cur.version || 1) + 1 }).where(eq(devis.id, id)).returning();
+  const p = patch || {};
+
+  // Phase 1 mapping — persist ONLY known devis columns and map client field
+  // names (tvaPercent → tax_rate_percent, totalTnd → grand_total_tnd, …).
+  // Unknown payload fields (items, companyName, notes, version, …) never
+  // reach the UPDATE statement.
+  const set: any = {};
+  const passthrough = ['reference', 'clientName', 'clientPhone', 'clientAddress', 'projectTitle', 'country', 'currency', 'region', 'surfaceAreaM2', 'perimeterLinearM', 'wasteMarginPercent'];
+  for (const k of passthrough) if (p[k] !== undefined) set[k] = p[k];
+  if (p.date !== undefined) {
+    const iso = isoDateOnly(p.date);
+    if (iso) set.date = iso;
+  }
+  if (p.tvaPercent !== undefined) set.taxRatePercent = toNum(p.tvaPercent);
+  else if (p.taxRatePercent !== undefined) set.taxRatePercent = toNum(p.taxRatePercent);
+  if (p.status !== undefined) set.status = CLIENT_STATUS_TO_SERVER[p.status] || p.status;
+  if (p.totalMaterialsCostTnd !== undefined) set.totalMaterialsCostTnd = toNum(p.totalMaterialsCostTnd);
+  else if (p.subtotalMaterialsTnd !== undefined) set.totalMaterialsCostTnd = toNum(p.subtotalMaterialsTnd);
+  if (p.totalLaborCostTnd !== undefined) set.totalLaborCostTnd = toNum(p.totalLaborCostTnd);
+  else if (p.subtotalLaborTnd !== undefined) set.totalLaborCostTnd = toNum(p.subtotalLaborTnd);
+
+  // Items: re-sync the devis_items rows when the client sends the full document.
+  const itemsPatch: any[] | null = Array.isArray(p.items) ? p.items : null;
+
+  // Totals snapshot (same formula as the client): raw − discount → TVA.
+  if (p.discount !== undefined || itemsPatch || set.taxRatePercent !== undefined) {
+    const effItems = itemsPatch ?? await db.select().from(devisItems).where(eq(devisItems.devisId, id));
+    const rawSum = effItems.reduce((acc: number, it: any) =>
+      acc + (toNum(it?.totalTnd) ?? toNum(it?.totalPriceTnd) ?? toNum(it?.total) ?? 0), 0);
+    const discount = toNum(p.discount) ?? Math.max(0, rawSum - (toNum(cur.subtotalBeforeTaxTnd) ?? rawSum));
+    const netHt = Math.max(0, rawSum - discount);
+    set.subtotalBeforeTaxTnd = netHt;
+    const tva = toNum(set.taxRatePercent) ?? toNum(cur.taxRatePercent) ?? 0;
+    set.taxAmountTnd = tva > 0 ? (netHt * tva) / 100 : 0;
+    set.grandTotalTnd = toNum(p.totalTnd) ?? toNum(p.total) ?? (netHt + (set.taxAmountTnd as number) + (toNum(p.timbreFiscal) ?? 0));
+  }
+
+  set.updatedAt = new Date();
+  set.version = (cur.version || 1) + 1;
+
+  const [updated] = await db.update(devis).set(set).where(eq(devis.id, id)).returning();
+
+  if (itemsPatch) {
+    await db.delete(devisItems).where(eq(devisItems.devisId, id));
+    const now = new Date();
+    for (let i = 0; i < itemsPatch.length; i++) {
+      await db.insert(devisItems).values({
+        devisId: id,
+        lineNumber: i + 1,
+        ...mapItemToServerRow(itemsPatch[i]),
+        createdAt: now,
+        updatedAt: now,
+        version: 1,
+      });
+    }
+  }
+
   return findDevisById(updated.id);
 }
 

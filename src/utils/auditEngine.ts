@@ -430,10 +430,18 @@ export function generateAuditPdfHtml(
     </div>
 
     <div class="footer no-print">
-      <button onclick="window.print()" style="background:#0284c7; color:white; border:none; padding:10px 20px; border-radius:8px; font-weight:800; cursor:pointer;">
+      <button id="audit-print-btn" style="background:#0284c7; color:white; border:none; padding:10px 20px; border-radius:8px; font-weight:800; cursor:pointer;">
         🖨️ Imprimer ou Enregistrer en PDF
       </button>
     </div>
+    <script>
+      (function(){
+        var btn = document.getElementById('audit-print-btn');
+        if(btn && typeof window.print === 'function'){
+          btn.addEventListener('click', function(){ window.print(); });
+        }
+      })();
+    </script>
   </div>
 </body>
 </html>
