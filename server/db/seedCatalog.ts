@@ -41,12 +41,31 @@
  */
 import 'dotenv/config';
 import { and, eq, isNull } from 'drizzle-orm';
-import { materialPrices, materials, priceSources } from './schema';
+import { materialPrices, materials, priceSources, trades } from './schema';
 import { DEFAULT_MARKET_RATES } from '../../src/data/marketRates';
 import { PRICE_SOURCES } from '../repositories/seed';
+import { config } from '../config';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const OFFICIAL_SOURCE = 'OFFICIAL_DEFAULT';
+
+// ── Official Trades (Métiers) ───────────────────────────────────────────────
+// The 12 canonical trades. is_official = true protects them from deletion.
+// code values match the existing TradeCategory union in src/types.ts.
+const OFFICIAL_TRADES = [
+  { code: 'placo',        labelFr: 'PLACO / PLÂTRE',         labelAr: 'جبس وبلاطور',           labelDerja: 'جبس وبلاطور',           icon: 'Layers',      sortOrder: 1 },
+  { code: 'peinture',     labelFr: 'PEINTURE',               labelAr: 'دهان وطلاء',            labelDerja: 'دهان',                  icon: 'Paintbrush',  sortOrder: 2 },
+  { code: 'carrelage',    labelFr: 'CARRELAGE',              labelAr: 'تبليط وسيراميك',        labelDerja: 'زربيعة',                icon: 'Grid3x3',     sortOrder: 3 },
+  { code: 'maconnerie',   labelFr: 'MAÇONNERIE',             labelAr: 'بناء بالأجر',           labelDerja: 'بناء',                  icon: 'BrickWall',   sortOrder: 4 },
+  { code: 'plomberie',    labelFr: 'PLOMBERIE',              labelAr: 'سباكية',                labelDerja: 'سباكية',                icon: 'Droplets',    sortOrder: 5 },
+  { code: 'electricite',  labelFr: 'ÉLECTRICITÉ',            labelAr: 'كهرباء',                labelDerja: 'كهرباء',                icon: 'Zap',         sortOrder: 6 },
+  { code: 'etancheite',   labelFr: 'ÉTANCHÉITÉ',             labelAr: 'عزل مائي',              labelDerja: 'عزل ماء',               icon: 'ShieldCheck', sortOrder: 7 },
+  { code: 'isolation',    labelFr: 'ISOLATION',              labelAr: 'عزل حراري',             labelDerja: 'عزل حرارة',              icon: 'Thermometer', sortOrder: 8 },
+  { code: 'menuiserie',   labelFr: 'MENUISERIE',             labelAr: 'نجارة',                 labelDerja: 'نجارة',                  icon: 'Hammer',      sortOrder: 9 },
+  { code: 'sols',         labelFr: 'REVÊTEMENTS DE SOL',     labelAr: 'أرضيات',                labelDerja: 'أرضيات',                icon: 'LayoutGrid',  sortOrder: 10 },
+  { code: 'facade',       labelFr: 'FAÇADE & EXTÉRIEUR',     labelAr: 'واجهات خارجية',         labelDerja: 'واجهات',                icon: 'Building2',   sortOrder: 11 },
+  { code: 'demolition',   labelFr: 'DÉMOLITION',             labelAr: 'هدم وإزالة',            labelDerja: 'هدم',                   icon: 'Trash2',      sortOrder: 12 },
+] as const;
 
 interface SeedStats {
   sourcesInserted: number;
@@ -79,7 +98,7 @@ function todayIso(): string {
 }
 
 async function main(): Promise<void> {
-  const databaseUrl = process.env.DATABASE_URL;
+  const databaseUrl = config.databaseUrl;
   if (!databaseUrl) {
     console.error('[KONSTRIVO-SEED] FATAL: DATABASE_URL is not set. Refusing to guess a target (see drizzle.config.ts).');
     process.exit(1);
@@ -128,10 +147,39 @@ async function main(): Promise<void> {
         priorityWeight: source.priorityWeight,
       }).onConflictDoNothing({ target: priceSources.code });
     }
-    // ── 2) materials — upsert by (code, company_id IS NULL) ─────────────────
+    // ── 2) trades — seed the 12 official trades ─────────────────────────────
+    const tradeCodeToId = new Map<string, string>();
+    for (const t of OFFICIAL_TRADES) {
+      const existing = await db.select().from(trades)
+        .where(eq(trades.code, t.code))
+        .limit(1);
+      if (existing.length > 0) {
+        tradeCodeToId.set(t.code, existing[0].id);
+        continue;
+      }
+      stats.sourcesInserted++; // reuse counter for visibility; trades are inserted
+      if (DRY_RUN) {
+        tradeCodeToId.set(t.code, `dry-run-${t.code}`);
+        continue;
+      }
+      const [inserted] = await db.insert(trades).values({
+        code: t.code,
+        labelFr: t.labelFr,
+        labelAr: t.labelAr ?? null,
+        labelDerja: t.labelDerja ?? null,
+        icon: t.icon ?? null,
+        sortOrder: t.sortOrder,
+        isActive: true,
+        isOfficial: true,
+      }).onConflictDoNothing({ target: trades.code }).returning({ id: trades.id });
+      if (inserted?.id) tradeCodeToId.set(t.code, inserted.id);
+    }
+
+    // ── 3) materials — upsert by (code, company_id IS NULL) + link trade_id ──
     for (const rate of DEFAULT_MARKET_RATES) {
       const desired = {
         trade: rate.category,
+        tradeId: tradeCodeToId.get(rate.category) ?? null,
         category: rate.category,
         nameFr: rate.nameFr,
         nameAr: rate.nameAr ?? null,
@@ -152,6 +200,7 @@ async function main(): Promise<void> {
         await db.insert(materials).values({
           code: rate.id,
           trade: desired.trade,
+          tradeId: desired.tradeId,
           category: desired.category,
           nameFr: desired.nameFr,
           nameAr: desired.nameAr,
@@ -168,6 +217,7 @@ async function main(): Promise<void> {
       const identical =
         !current.isDeleted &&
         current.trade === desired.trade &&
+        (current.tradeId ?? null) === desired.tradeId &&
         current.category === desired.category &&
         current.nameFr === desired.nameFr &&
         (current.nameAr ?? null) === desired.nameAr &&
@@ -183,6 +233,7 @@ async function main(): Promise<void> {
       if (DRY_RUN) continue;
       await db.update(materials).set({
         trade: desired.trade,
+        tradeId: desired.tradeId,
         category: desired.category,
         nameFr: desired.nameFr,
         nameAr: desired.nameAr,
@@ -195,7 +246,7 @@ async function main(): Promise<void> {
         updatedAt: new Date(),
       }).where(eq(materials.id, current.id));
     }
-    // ── 3) material_prices — one official current price per material ────────
+    // ── 4) material_prices — one official current price per material ────────
     for (const rate of DEFAULT_MARKET_RATES) {
       const found = await db.select().from(materials)
         .where(and(eq(materials.code, rate.id), isNull(materials.companyId)))

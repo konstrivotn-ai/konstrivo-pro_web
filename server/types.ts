@@ -11,6 +11,7 @@ export type {
   TradeCategory,
   CountryCode,
   CurrencyCode,
+  Trade,
 } from '../src/types';
 
 // ── User / Auth ─────────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ export interface Material {
   id: string;
   code: string;
   trade: string;
+  tradeId?: string | null;
   category: string;
   nameFr: string;
   nameAr: string;

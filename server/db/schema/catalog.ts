@@ -7,10 +7,32 @@ import { pgTable, uuid, varchar, text, boolean, integer, numeric, timestamp, dat
 import { sql } from 'drizzle-orm';
 import { companies } from './identity';
 
+// ── Trades (Métiers) ──────────────────────────────────────────────────────────
+// Independent, dynamic trade registry. Each trade owns its materials and prices.
+// The 12 original trades are seeded as is_official = true and must never be deleted.
+export const trades = pgTable('trades', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  code: varchar('code', { length: 50 }).notNull(),
+  labelFr: varchar('label_fr', { length: 100 }).notNull(),
+  labelAr: varchar('label_ar', { length: 100 }),
+  labelDerja: varchar('label_derja', { length: 100 }),
+  icon: varchar('icon', { length: 50 }),
+  sortOrder: integer('sort_order').notNull().default(0),
+  isActive: boolean('is_active').notNull().default(true),
+  isOfficial: boolean('is_official').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  uqTradeCode: uniqueIndex('uq_trade_code').on(table.code),
+  idxTradesOfficial: index('idx_trades_official').on(table.isOfficial),
+  idxTradesActive: index('idx_trades_active').on(table.isActive),
+}));
+
 export const materials = pgTable('materials', {
   id: uuid('id').primaryKey().defaultRandom(),
   code: varchar('code', { length: 100 }).notNull(),
   trade: varchar('trade', { length: 50 }).notNull(),
+  tradeId: uuid('trade_id').references(() => trades.id),
   category: varchar('category', { length: 50 }).notNull(),
   nameFr: text('name_fr').notNull(),
   nameAr: text('name_ar'),
@@ -29,6 +51,7 @@ export const materials = pgTable('materials', {
 }, (table) => ({
   uqMaterial: uniqueIndex('uq_material_code').on(table.code, table.companyId),
   idxMaterialsTrade: index('idx_materials_trade').on(table.trade),
+  idxMaterialsTradeId: index('idx_materials_trade_id').on(table.tradeId),
   idxMaterialsCategory: index('idx_materials_category').on(table.category),
   idxMaterialsCompany: index('idx_materials_company').on(table.companyId),
 }));

@@ -34,6 +34,22 @@ export type TradeCategory =
   | 'facade' 
   | 'demolition';
 
+// ── Trade (Métier) ───────────────────────────────────────────────────────────
+// Independent, dynamic trade entity. Each trade owns its materials and prices.
+export interface Trade {
+  id: string;
+  code: string;
+  labelFr: string;
+  labelAr?: string;
+  labelDerja?: string;
+  icon?: string;
+  sortOrder: number;
+  isActive: boolean;
+  isOfficial: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface MaterialRate {
   id: string;
   category: TradeCategory;
