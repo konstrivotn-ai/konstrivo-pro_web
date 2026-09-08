@@ -72,6 +72,7 @@ async function main() {
   const { runApiAuthForgotResetTests } = await import('./api_auth_forgot_reset.test');
   const { runResetPasswordPageTests } = await import('./reset_password_page.test');
   const { runMaterialPriceTests } = await import('./materials.test');
+  const { runTradePhase2aTests } = await import('./trades_phase2a.test');
   const { runDevisTests } = await import('./devis.test');
   const { runSupplierTests } = await import('./suppliers.test');
   const { runSyncTests } = await import('./sync.test');
@@ -90,6 +91,7 @@ async function main() {
   await runResetPasswordPageTests();
   await runAuthTests();
   await runMaterialPriceTests();
+  await runTradePhase2aTests();
   await runDevisTests();
   await runSupplierTests();
   await runSyncTests();
