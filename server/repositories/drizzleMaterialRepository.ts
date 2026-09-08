@@ -30,8 +30,12 @@ export async function upsertMaterialByCode(data: {
   nameDerja?: string | null;
   baseUnit: string;
   technicalSpecs?: string | null;
-}) {
-  const db = await getDatabase();
+}, tx?: any) {
+  // Phase A — optional explicit transaction handle. When provided, ALL reads
+  // and writes run on the SAME connection/transaction so a bulk catalog import
+  // is atomic (any row failure → full rollback). When omitted the behaviour is
+  // byte-identical to the pre-Phase-A single-item upsert.
+  const db = tx || (await getDatabase());
   if (!db) throw new Error('Database not available');
   const existing = await db.select().from(materials)
     .where(and(eq(materials.code, data.code), isNull(materials.companyId)))
@@ -97,4 +101,19 @@ export async function softDeleteMaterial(id: string) {
   const db = await getDatabase();
   if (!db) throw new Error('Database not available');
   await db.update(materials).set({ isDeleted: true }).where(eq(materials.id, id));
+}
+
+/**
+ * Phase A — read-only lookup of an OFFICIAL material by its legacy `code`
+ * (company_id IS NULL), optionally INSIDE an open transaction. Used by the
+ * bulk CSV import to report created vs updated per row without changing the
+ * Step 5 upsert contract.
+ */
+export async function findOfficialMaterialByCode(code: string, tx?: any) {
+  const db = tx || (await getDatabase());
+  if (!db) return undefined;
+  const res = await db.select().from(materials)
+    .where(and(eq(materials.code, code), isNull(materials.companyId)))
+    .limit(1);
+  return res[0];
 }

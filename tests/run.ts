@@ -76,6 +76,7 @@ async function main() {
   const { runTradePhase2bTests } = await import('./trades_phase2b.test');
   const { runDevisTests } = await import('./devis.test');
   const { runSupplierTests } = await import('./suppliers.test');
+  const { runCatalogImportCsvTests } = await import('./catalogImportCsv.test');
   const { runSyncTests } = await import('./sync.test');
   const { runDirectoryTests } = await import('./directory.test');
   const { runAiTests } = await import('./ai.test');
@@ -96,6 +97,7 @@ async function main() {
   await runTradePhase2bTests();
   await runDevisTests();
   await runSupplierTests();
+  await runCatalogImportCsvTests();
   await runSyncTests();
   await runDirectoryTests();
   await runRateLimitTests();

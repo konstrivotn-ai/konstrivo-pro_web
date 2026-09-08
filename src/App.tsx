@@ -809,6 +809,7 @@ export default function App() {
           onUpdateArtisans={setArtisans}
           rates={rates}
           onBulkUpdateRates={handleBulkUpdateRates}
+          onImportCompleted={() => setRatesSyncNonce(n => n + 1)}
           lang={lang}
           country={country}
           currency={currency}

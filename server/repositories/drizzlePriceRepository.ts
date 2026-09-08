@@ -175,8 +175,11 @@ export async function upsertOfficialPrice(data: {
   currencyCode?: string;
   countryCode?: string;
   effectiveFrom?: string;
-}) {
-  const db = await getDatabase();
+}, tx?: any) {
+  // Phase A — optional explicit transaction handle (see upsertMaterialByCode).
+  // With a transaction the bulk import is atomic; without one the behaviour
+  // is identical to the pre-Phase-A single-item upsert.
+  const db = tx || (await getDatabase());
   if (!db) throw new Error('Database not available');
 
   // Resolve material by legacy code (official = company_id IS NULL)

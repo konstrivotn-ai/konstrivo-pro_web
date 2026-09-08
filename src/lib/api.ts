@@ -315,6 +315,50 @@ export async function upsertCatalogItem(body: {
   return data.data || data;
 }
 
+// ─────────────── Phase A — Admin bulk CSV import (transactional) ───────────
+/**
+ * Upload the RAW CSV file to POST /catalog/import-csv. The server does ALL
+ * parsing/validation/persistence inside ONE database transaction
+ * (all-or-nothing) and returns a per-row report:
+ *   { totalRows, committed, imported, updated, failed[] }.
+ * Requires CATALOG_OFFICIAL_MANAGE (admin). Unknown trades are refused by the
+ * server (never coerced to 'placo'; dynamic trades come in Phase B).
+ *
+ * Uses a raw fetch (NOT apiFetch) on purpose: a multipart FormData body must
+ * keep its own multipart Content-Type with boundary (apiFetch forces
+ * application/json, which would break the multipart parsing server-side).
+ */
+export async function importCatalogCsv(
+  file: File,
+  opts?: { countryCode?: string; currencyCode?: string }
+): Promise<any> {
+  const q = new URLSearchParams();
+  if (opts?.countryCode) q.set('countryCode', opts.countryCode);
+  if (opts?.currencyCode) q.set('currencyCode', opts.currencyCode);
+
+  const form = new FormData();
+  form.append('file', file, file.name);
+
+  const headers: Record<string, string> = {};
+  if (getAccessToken()) headers.Authorization = `Bearer ${getAccessToken()}`;
+
+  const res = await fetch(`${BASE}/catalog/import-csv${q.toString() ? '?' + q.toString() : ''}`, {
+    method: 'POST',
+    body: form,
+    headers,
+    credentials: 'include',
+  });
+
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err: any = new Error((payload as any)?.error?.message || 'CSV import failed');
+    err.status = res.status;
+    err.report = (payload as any)?.data;
+    throw err;
+  }
+  return payload;
+}
+
 // ─────────────── Price Update Foundation (Step 8) ───────────────────────────
 // Incoming Price Update → Pending → Admin Review → Official Current Price.
 // All require CATALOG_OFFICIAL_MANAGE (server-side, unchanged).

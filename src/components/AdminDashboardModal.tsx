@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { ArtisanDirectoryItem, MaterialRate, DevisDocument, Language, CountryCode, CurrencyCode, TradeCategory, UserProfile } from '../types';
 import { CURRENCY_SYMBOLS, COUNTRIES_CONFIG, formatPrice } from '../data/countryConfig';
-import { login, upsertCatalogItem, listPendingPriceUpdates, approvePendingPriceUpdate } from '../lib/api';
+import { login, upsertCatalogItem, listPendingPriceUpdates, approvePendingPriceUpdate, importCatalogCsv } from '../lib/api';
 
 export interface ProFeatureItem {
   id: string;
@@ -87,6 +87,8 @@ interface AdminDashboardModalProps {
   onUpdateArtisans: (artisans: ArtisanDirectoryItem[]) => void;
   rates: MaterialRate[];
   onBulkUpdateRates: (rates: MaterialRate[]) => void;
+  /** Phase A — called after a successful transactional CSV import so App can re-sync server prices immediately. */
+  onImportCompleted?: () => void;
   lang: Language;
   country: CountryCode;
   currency: CurrencyCode;
@@ -111,6 +113,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   onUpdateArtisans,
   rates = [],
   onBulkUpdateRates,
+  onImportCompleted,
   lang,
   country,
   currency
@@ -139,6 +142,9 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
 
   // CSV File Input Ref
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Phase A — server-side transactional CSV import in flight (prevents re-entry)
+  const [csvImporting, setCsvImporting] = useState<boolean>(false);
 
   // Price Editing Local State
   const [editableRates, setEditableRates] = useState<MaterialRate[]>(rates);
@@ -439,176 +445,71 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     }
   };
 
-  // CSV Catalogue Import Handler
-  const handleCsvImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+  // Phase A — CSV Catalogue Import Handler
+  // The browser only TRANSMITS the raw file. ALL parsing, validation and
+  // persistence happen server-side inside ONE database transaction
+  // (POST /api/v1/catalog/import-csv — all-or-nothing, per-row report).
+  // Unknown trades are REFUSED by the server (never coerced to 'placo';
+  // dynamic trades come later in Phase B).
+  const handleCsvImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      try {
-        let text = e.target?.result as string;
-        if (!text) return;
-
-        // Strip UTF-8 Byte Order Mark (BOM) automatically
-        text = text.replace(/^\uFEFF/, '');
-
-        // Detect delimiter (; or , or \t)
-        const firstLine = text.split('\n')[0] || '';
-        let delimiter = ';';
-        if (firstLine.includes(';') && !firstLine.includes(',')) {
-          delimiter = ';';
-        } else if (firstLine.includes(',') && !firstLine.includes(';')) {
-          delimiter = ',';
-        } else if (firstLine.includes('\t')) {
-          delimiter = '\t';
-        }
-
-        const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0);
-        if (lines.length === 0) {
-          alert('Le fichier CSV/Excel est vide.');
-          return;
-        }
-
-        let importedCount = 0;
-        let updatedCount = 0;
-
-        const currentRatesMap = new Map<string, MaterialRate>();
-        editableRates.forEach(r => {
-          currentRatesMap.set(r.nameFr.toLowerCase().trim(), r);
-        });
-
-        const updatedRatesList = [...editableRates];
-
-        // Check if header row is present
-        const headerRow = lines[0].toLowerCase();
-        const hasHeader = headerRow.includes('nom') || headerRow.includes('name') || headerRow.includes('prix') || headerRow.includes('price');
-        const startIdx = hasHeader ? 1 : 0;
-
-        for (let i = startIdx; i < lines.length; i++) {
-          const row = lines[i];
-          const cols = row.split(delimiter).map(col => col.replace(/^["']|["']$/g, '').trim());
-          if (cols.length < 2) continue;
-
-          let nameFr = sanitizeInput(cols[0]);
-          let category: TradeCategory = 'placo';
-          let unit: MaterialRate['unit'] = 'unit';
-          let price = 0;
-          let note = '';
-          let nameAr = nameFr;
-
-          if (cols.length >= 4) {
-            nameFr = sanitizeInput(cols[0]);
-            category = (cols[1].toLowerCase() as TradeCategory) || 'placo';
-            unit = (cols[2] as MaterialRate['unit']) || 'unit';
-            price = parseFloat(cols[3].replace(',', '.')) || 0;
-            note = sanitizeInput(cols[4]) || 'Catalogue BTP importé par CSV';
-            if (cols[5]) nameAr = sanitizeInput(cols[5]);
-          } else if (cols.length === 2) {
-            nameFr = sanitizeInput(cols[0]);
-            price = parseFloat(cols[1].replace(',', '.')) || 0;
-          } else if (cols.length === 3) {
-            nameFr = sanitizeInput(cols[0]);
-            unit = (cols[1] as MaterialRate['unit']) || 'unit';
-            price = parseFloat(cols[2].replace(',', '.')) || 0;
-          }
-
-          if (!nameFr || isNaN(price) || price <= 0) continue;
-
-          const validCategories: TradeCategory[] = [
-            'placo', 'peinture', 'carrelage', 'maconnerie', 
-            'plomberie', 'electricite', 'isolation', 'facade', 
-            'etancheite', 'menuiserie'
-          ];
-          if (!validCategories.includes(category)) {
-            category = 'placo';
-          }
-
-          const existingKey = nameFr.toLowerCase().trim();
-          if (currentRatesMap.has(existingKey)) {
-            const existingItem = currentRatesMap.get(existingKey)!;
-            existingItem.unitPriceTnd = price;
-            existingItem.unit = unit;
-            existingItem.category = category;
-            if (note) existingItem.note = note;
-            updatedCount++;
-          } else {
-            const newRate: MaterialRate = {
-              id: `mat_csv_${Date.now()}_${i}`,
-              category,
-              nameFr,
-              nameAr,
-              nameDerja: nameFr,
-              unit,
-              unitPriceTnd: price,
-              defaultPriceTnd: price,
-              note: note || 'Catalogue importé par CSV 2026'
-            };
-            updatedRatesList.unshift(newRate);
-            currentRatesMap.set(existingKey, newRate);
-            importedCount++;
-          }
-        }
-
-        setEditableRates(updatedRatesList);
-        onBulkUpdateRates(updatedRatesList);
-
-        // Step 5 — best-effort: persist imported/updated rows to PostgreSQL
-        if (isCurrentlyAdmin) {
-          let csvSaved = 0;
-          for (const r of updatedRatesList) {
-            try {
-              await upsertCatalogItem({
-                code: r.id,
-                price: r.unitPriceTnd,
-                nameFr: r.nameFr,
-                nameAr: r.nameAr || undefined,
-                nameDerja: r.nameDerja || undefined,
-                trade: r.category,
-                category: r.category,
-                unit: r.unit,
-                currencyCode: selectedCurrency,
-                countryCode: selectedCountry,
-                technicalSpecs: r.note || undefined,
-              });
-              csvSaved++;
-            } catch (e) { /* best-effort */ }
-          }
-          setNotification(`✓ CSV traité : ${importedCount} créés / ${updatedCount} mis à jour — ${csvSaved} sauvegardés en base.`);
-        } else {
-          setNotification(`✓ Catalogue CSV Traité : ${importedCount} nouveaux matériaux créés, ${updatedCount} mis à jour dans le calculateur !`);
-        }
-        setTimeout(() => setNotification(null), 4000);
-
-      } catch (err) {
-        console.error(err);
-        alert('Erreur lors de la lecture du fichier CSV. Assurez-vous d\'utiliser un fichier texte/CSV valide.');
-      }
-    };
-
-    reader.readAsText(file, 'UTF-8');
-
-    if (event.target) {
-      event.target.value = '';
+    if (csvImporting) {
+      if (event.target) event.target.value = '';
+      return;
+    }
+    setCsvImporting(true);
+    try {
+      const payload: any = await importCatalogCsv(file, {
+        countryCode: selectedCountry,
+        currencyCode: selectedCurrency,
+      });
+      const report = payload?.data || {};
+      setNotification(
+        `✓ Import catalogue réussi : ${report.imported ?? 0} créé(s), ${report.updated ?? 0} mis à jour ` +
+        `(${report.totalRows ?? 0} lignes, marché ${report.countryCode ?? selectedCountry}/${report.currencyCode ?? selectedCurrency}).`
+      );
+      if (typeof onImportCompleted === 'function') onImportCompleted();
+      setTimeout(() => setNotification(null), 6000);
+    } catch (err: any) {
+      const failedRows: any[] = Array.isArray(err?.report?.failed) ? err.report.failed : [];
+      const reasons = failedRows
+        .slice(0, 3)
+        .map((f: any) => `ligne ${f.row}${f.reference ? ` (${f.reference})` : ''} : ${f.reason}`)
+        .join(' | ');
+      setNotification(
+        `✗ Import annulé — aucune donnée écrite (import tout-ou-rien). ${reasons || err?.message || 'Erreur serveur.'}`
+      );
+      setTimeout(() => setNotification(null), 8000);
+    } finally {
+      setCsvImporting(false);
+      if (event.target) event.target.value = '';
     }
   };
+  // (Phase A — the legacy browser-side CSV parsing and the N×upsertCatalogItem
+  // persist loop were fully removed; import is now one transactional server call.)
 
-  // Sample CSV Download Template
+  // Sample CSV Download Template — the Reference column is REQUIRED: it is the
+  // stable material code (materials.code) that makes re-imports idempotent
+  // (re-uploading the same file UPDATES rows in place, never duplicates).
+  // The server-side Phase A import expects exactly these headers.
   const handleDownloadCsvSample = () => {
     const sampleCsvContent = 
-`Nom_Materiau;Categorie;Unite;Prix_TND_HT;Note_Technique;Nom_Arabe
-Plaque BA13 Standard 3m2;placo;unit;30;Plaque plâtre NF 1.2x2.5m;بلاك با13 عادي
-Plaque BA13 Hydrofuge Vert;placo;unit;46;Plaque hydrofuge pièces humides;بلاك با13 مائي
-Laine de Roche 50mm 7.2m2;isolation;boite;90;Isolation thermique et phonique;صوف صخري 50مم
-Enduit de Joint 25kg;peinture;sac;42;Séchage rapide pour calicot;معجون فاصل 25كغ
-Carreau Grès Cérame 60x60;carrelage;m²;38;Antidérapant R11 grand passage;زليج غرانيت 60*60
-Tube PEX Sanitaire 20mm;plomberie;ml;3.5;Gainé rouge/bleu 50m;أنبوب صحي 20مم`;
+`Reference;Nom_Materiau;Categorie;Unite;Prix_TND_HT;Note_Technique;Nom_Arabe
+plaque_ba13_standard;Plaque BA13 Standard 3m2;placo;unit;30;Plaque plâtre NF 1.2x2.5m;بلاك با13 عادي
+plaque_ba13_hydrofuge;Plaque BA13 Hydrofuge Vert;placo;unit;46;Plaque hydrofuge pièces humides;بلاك با13 مائي
+laine_de_roche_50mm;Laine de Roche 50mm 7.2m2;isolation;boite;90;Isolation thermique et phonique;صوف صخري 50مم
+enduit_de_joint_interieur_25kg;Enduit de Joint 25kg;peinture;sac;42;Séchage rapide pour calicot;معجون فاصل 25كغ
+carreau_gres_cerame_60x60;Carreau Grès Cérame 60x60;carrelage;m²;38;Antidérapant R11 grand passage;زليج غرانيت 60*60
+tube_pex_sanitaire_20mm;Tube PEX Sanitaire 20mm;plomberie;ml;3.5;Gainé rouge/bleu 50m;أنبوب صحي 20مم
+parquet_stratifie_8mm_m2;Parquet Stratifié HDF 8mm AC4;sols;m²;34;Haute résistance aux passages;باركيه 8مم
+camion_evacuation_gravats_6m3;Camion Évacuation Gravats 6m3;demolition;unit;160;Transport agréé vers décharge publique;نقل الأنقاض`;
 
     const blob = new Blob([sampleCsvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', 'modele_catalogue_konstrivo_btp.csv');
+    link.setAttribute('download', 'modele_import_catalogue_konstrivo.csv');
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -1359,7 +1260,7 @@ Tube PEX Sanitaire 20mm;plomberie;ml;3.5;Gainé rouge/bleu 50m;أنبوب صحي
                   type="file"
                   ref={fileInputRef}
                   onChange={handleCsvImport}
-                  accept=".csv,.txt,.xlsx,.xls"
+                  accept=".csv,.txt"
                   className="hidden"
                 />
 
@@ -1424,14 +1325,16 @@ Tube PEX Sanitaire 20mm;plomberie;ml;3.5;Gainé rouge/bleu 50m;أنبوب صحي
                       <span>Modèle CSV</span>
                     </button>
 
-                    {/* Bulk CSV Import Button */}
+                    {/* Bulk CSV Import Button — Phase A: server-side transactional import (CSV only) */}
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
-                      className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black rounded-xl shadow-lg shadow-emerald-500/20 transition-all cursor-pointer flex items-center gap-1.5 border border-emerald-400"
+                      disabled={csvImporting}
+                      title="Import transactionnel côté serveur : tout-ou-rien, aucune écriture partielle"
+                      className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black rounded-xl shadow-lg shadow-emerald-500/20 transition-all cursor-pointer flex items-center gap-1.5 border border-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       <Upload className="w-4 h-4" />
-                      <span>Importer Catalogue (CSV/Excel)</span>
+                      <span>{csvImporting ? 'Import en cours…' : 'Importer Catalogue (CSV)'}</span>
                     </button>
 
                     {/* Manual Add Material Form Toggle */}
@@ -1562,6 +1465,8 @@ Tube PEX Sanitaire 20mm;plomberie;ml;3.5;Gainé rouge/bleu 50m;أنبوب صحي
                           <option value="facade">Façade & Aquapanel</option>
                           <option value="etancheite">Étanchéité & Silicone</option>
                           <option value="menuiserie">Menuiserie & Fixations</option>
+                          <option value="sols">Revêtements de Sols</option>
+                          <option value="demolition">Démolition & Évacuation</option>
                         </select>
                       </div>
 
