@@ -277,6 +277,16 @@ export async function listPrices(opts?: { materialId?: string; market?: string; 
   return await res.json().catch(() => ({ data: [], page: 1, limit: 20, total: 0 }));
 }
 
+// ---------------- Trades API (Phase 2B — read-only registry) --------------
+export async function listTrades(opts?: { officialOnly?: boolean }) {
+  const q = new URLSearchParams();
+  if (opts?.officialOnly) q.set('officialOnly', 'true');
+  const url = `${BASE}/trades${q.toString() ? '?' + q.toString() : ''}`;
+  const res = await apiFetch(url, { method: 'GET' });
+  if (!res.ok) throw new Error('Failed to list trades');
+  return await res.json().catch(() => ({ data: [] }));
+}
+
 // ---------------- Catalog (Admin → PostgreSQL) ----------------
 /**
  * Step 5 — upsert an OFFICIAL material + its official current price.

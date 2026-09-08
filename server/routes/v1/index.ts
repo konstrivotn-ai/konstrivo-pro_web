@@ -6,6 +6,7 @@
 import { Router } from 'express';
 import { authRouter, meRouter } from './auth';
 import { materialsRouter } from './materials';
+import { tradesRouter } from './trades';
 import { pricesRouter } from './prices';
 import { catalogRouter } from './catalog';
 import { machineRouter } from './machine';
@@ -37,6 +38,8 @@ export function setupV1Router(): Router {
         'GET    /api/v1/users/me',
         'GET    /api/v1/materials',
         'GET    /api/v1/materials/:id',
+        'GET    /api/v1/trades',
+        'GET    /api/v1/trades/:id',
         'GET    /api/v1/prices',
         'GET    /api/v1/prices/sources',
         'POST   /api/v1/prices/custom',
@@ -63,6 +66,7 @@ export function setupV1Router(): Router {
   router.use('/auth', authRouter);
   router.use('/users', meRouter);
   router.use('/materials', materialsRouter);
+  router.use('/trades', tradesRouter);
   router.use('/prices', pricesRouter);
   router.use('/catalog', catalogRouter);
   router.use('/machine', machineRouter);
