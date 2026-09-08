@@ -10,7 +10,7 @@ import { getDatabase } from '../../db/client';
 import { config } from '../../config';
 import { getBoundary, parseMultipart, isValidFileType, MultipartFile } from '../../utils/multipart';
 import { parseCsv } from '../../utils/csv';
-import { OFFICIAL_TRADES } from '../../repositories/tradeRepository';
+import { OFFICIAL_TRADES, upsertTradeByCode } from '../../repositories/tradeRepository';
 import { upsertMaterialByCode, findOfficialMaterialByCode } from '../../repositories/drizzleMaterialRepository';
 import {
   upsertOfficialPrice,
@@ -133,20 +133,21 @@ router.post('/upsert',
   }
 );
 
-// ── Phase A — Admin bulk CSV import (transactional) ─────────────────────────
+// ── Phase A + B — Admin bulk CSV import (transactional) ───────────────────────
 // POST /catalog/import-csv
 //
 // Replaces the old browser-side CSV parsing + N×POST /catalog/upsert flow:
 //   - The Admin UI uploads the RAW file; ALL parsing, validation and
 //     persistence happen HERE, server-side.
 //   - Accepts multipart/form-data (file part "file") OR a raw text/csv body.
-//   - Only .csv is accepted in Phase A (no Excel yet).
+//   - Only .csv is accepted in Phase A/B (no Excel yet).
 //   - EVERY row is validated BEFORE any database write; if ANY row is invalid
 //     the import is aborted with 400 and NOTHING is written (all-or-nothing).
 //   - All material/price writes run inside ONE database transaction; any
 //     unexpected database failure rolls the WHOLE batch back.
-//   - Unknown trade codes are REFUSED with a clear error — never coerced to
-//     'placo', never auto-created (dynamic trades are Phase B).
+//   - Unknown trade codes are auto-created as dynamic (non-official) trades
+//     so newly imported trades become immediately available in the trade
+//     selection UI without a hardcoded TypeScript/React entry (Phase B).
 //
 // Reuses the existing building blocks (no schema change):
 //   multipart validation (utils/multipart + config limits), the shared CSV
@@ -166,7 +167,6 @@ const IMPORT_CSV_COLUMNS: Record<string, string[]> = {
   nameAr: ['nom_arabe', 'name_ar', 'arabe'],
 };
 const IMPORT_CSV_REQUIRED_COLUMNS = ['reference', 'nameFr', 'trade', 'price'];
-const IMPORT_CSV_ALLOWED_TRADES = OFFICIAL_TRADES.map((t) => t.code);
 
 /** Normalize a header cell: strip accents, lowercase, collapse spaces. */
 function normalizeCsvHeader(header: string): string {
@@ -286,10 +286,6 @@ router.post('/import-csv',
         if (!nameFr) { fail('Missing Nom_Materiau (material name).'); continue; }
         const trade = tradeRaw.toLowerCase();
         if (!trade) { fail('Missing Categorie (trade).'); continue; }
-        if (!IMPORT_CSV_ALLOWED_TRADES.includes(trade)) {
-          fail(`Unknown trade '${tradeRaw}'. Creating new trades via import is not supported yet (Phase B). Allowed trades: ${IMPORT_CSV_ALLOWED_TRADES.join(', ')}.`);
-          continue;
-        }
         const price = parseImportPrice(priceRaw);
         if (price === null) { fail(`Invalid price '${priceRaw}'.`); continue; }
         if (price < 0) { fail(`Price must be >= 0 (got ${price}).`); continue; }
@@ -311,7 +307,27 @@ router.post('/import-csv',
         });
       }
 
-      // ── 5) ONE transaction: every material/price write commits or rolls back
+      // ── 5) Ensure all trades exist (Phase B — dynamic trade creation)
+      // Collect unique trade codes from the valid rows and create any that
+      // don't already exist. This makes newly imported trades immediately
+      // available in the trade selection UI without a hardcoded entry.
+      const uniqueTrades = [...new Set(valid.map((item) => item.trade))];
+      for (const tradeCode of uniqueTrades) {
+        try {
+          await upsertTradeByCode(tradeCode);
+        } catch (tradeErr: any) {
+          // If trade creation fails, abort the import with a clear error.
+          return res.status(500).json({
+            error: {
+              code: 'INTERNAL_ERROR',
+              message: `Failed to create trade '${tradeCode}': ${tradeErr?.message || tradeErr}`,
+            },
+            data: { fileName, totalRows: rows.length, committed: false, imported: 0, updated: 0, failed: [] },
+          });
+        }
+      }
+
+      // ── 6) ONE transaction: every material/price write commits or rolls back
       const db = await getDatabase();
       if (!db) { next(internalError('Database not available')); return; }
 

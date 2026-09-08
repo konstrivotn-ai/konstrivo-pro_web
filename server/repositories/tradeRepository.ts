@@ -171,4 +171,41 @@ class HybridTradeRepository implements ITradeRepository {
 
 export { MemoryTradeRepository };
 
+/**
+ * Phase B — Create a trade by code if it does not already exist.
+ *
+ * Delegates to the Drizzle repository when PostgreSQL is available, otherwise
+ * creates the trade in the in-memory store. Official trades are never modified.
+ * Idempotent: returns the existing trade if the code is already present.
+ */
+export async function upsertTradeByCode(code: string, label?: string) {
+  if (await isDatabaseAvailable()) {
+    return await drizzleRepo.upsertTradeByCode(code, label);
+  }
+  // Memory mode
+  const existing = tradeRepository.findByCode(code);
+  if (existing) return existing;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('[KONSTRIVO] Trade repository: in-memory trade creation is not allowed in production.');
+  }
+  const timestamp = now();
+  const newTrade: Trade = {
+    id: `trade_${code}`,
+    code,
+    labelFr: label || code,
+    labelAr: undefined,
+    labelDerja: undefined,
+    icon: undefined,
+    sortOrder: 999,
+    isActive: true,
+    isOfficial: false,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const map = memoryStore.getCollection(COLLECTION, `server/data/${COLLECTION}.json`);
+  map.set(newTrade.id, newTrade);
+  memoryStore.saveCollection(COLLECTION);
+  return newTrade;
+}
+
 export const tradeRepository: ITradeRepository = new HybridTradeRepository();

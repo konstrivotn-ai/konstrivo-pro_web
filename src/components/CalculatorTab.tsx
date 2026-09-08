@@ -8,7 +8,7 @@ import {
   ShieldCheck, FileCheck
 } from 'lucide-react';
 import { 
-  TradeCategory, MaterialRate, Language, DevisItem, CalculationResult, 
+  TradeCategory, Trade, MaterialRate, Language, DevisItem, CalculationResult, 
   CountryCode, CurrencyCode, UnitSystem 
 } from '../types';
 import { 
@@ -22,6 +22,25 @@ import {
 import { formatCalculationForWhatsApp, openWhatsApp } from '../utils/whatsapp';
 import { COUNTRIES_CONFIG, CURRENCY_SYMBOLS, convertFromTnd, formatPrice } from '../data/countryConfig';
 import { auditCalculationResult, generateAuditPdfHtml } from '../utils/auditEngine';
+import { listTrades } from '../lib/api';
+
+// Phase B — UI metadata for official trades (icons + Arabic subtitle).
+// Dynamic trades (from CSV import) fall back to a simple dot + their labelFr.
+type LucideIcon = React.ComponentType<{ className?: string }>;
+const TRADE_UI_META: Record<string, { label: string; sub: string; icon: LucideIcon }> = {
+  placo:        { label: 'PLACO / PLÂTRE',      sub: 'أسقف وجدران جبس',     icon: Layers },
+  peinture:     { label: 'PEINTURE',             sub: 'دهان وطلاء',          icon: Paintbrush },
+  carrelage:    { label: 'CARRELAGE',            sub: 'تبليط وسيراميك',      icon: Ruler },
+  maconnerie:   { label: 'MAÇONNERIE',           sub: 'بناء بالأجر',         icon: Hammer },
+  plomberie:    { label: 'PLOMBERIE',            sub: 'سباكة وصحي',          icon: Droplet },
+  electricite:  { label: 'ÉLECTRICITÉ',          sub: 'كهرباء وإنارة',       icon: Zap },
+  etancheite:   { label: 'ÉTANCHÉITÉ',           sub: 'عزل مائي',           icon: Umbrella },
+  isolation:    { label: 'ISOLATION',            sub: 'عزل حراري',          icon: Sun },
+  menuiserie:   { label: 'MENUISERIE',           sub: 'أبواب وشبابيك',       icon: DoorClosed },
+  sols:         { label: 'SOLS & PARQUET',       sub: 'أرضيات وباركيه',      icon: Trees },
+  facade:       { label: 'FAÇADE',               sub: 'واجهات خارجية',       icon: Shield },
+  demolition:   { label: 'DÉMOLITION',           sub: 'هدم وأنقاض',          icon: Trash2 },
+};
 
 interface CalculatorTabProps {
   rates: MaterialRate[];
@@ -49,7 +68,31 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
 
   const isProd = !!((import.meta as any).env && (import.meta as any).env.PROD);
 
-  const [selectedTrade, setSelectedTrade] = useState<TradeCategory>('placo');
+  // Phase B — dynamic trade selection from the trade repository/API
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [tradesLoading, setTradesLoading] = useState(true);
+  const [tradesError, setTradesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function fetchTrades() {
+      try {
+        const res = await listTrades();
+        if (!cancelled) {
+          setTrades(Array.isArray(res?.data) ? res.data : []);
+          setTradesError(null);
+        }
+      } catch (err: any) {
+        if (!cancelled) setTradesError(err?.message || 'Failed to load trades');
+      } finally {
+        if (!cancelled) setTradesLoading(false);
+      }
+    }
+    fetchTrades();
+    return () => { cancelled = true; };
+  }, []);
+
+  const [selectedTrade, setSelectedTrade] = useState<string>('placo');
   const [copiedSuccess, setCopiedSuccess] = useState(false);
   const [addedSuccess, setAddedSuccess] = useState(false);
 
@@ -296,7 +339,7 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
         ...fiscalOpts
       };
       result = calculateFacade(input, rates);
-    } else {
+    } else if (selectedTrade === 'demolition') {
       const input: DemolitionInput = {
         areaM2: demoArea,
         thicknessCm: demoThickness,
@@ -306,6 +349,22 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
         ...fiscalOpts
       };
       result = calculateDemolition(input, rates);
+    } else {
+      // Phase B — dynamic trade (no calculation formula available yet).
+      // Return a minimal CalculationResult so the UI doesn't crash.
+      const zero = 0;
+      result = {
+        trade: selectedTrade as TradeCategory,
+        subType: selectedTrade,
+        subTypeTitle: selectedTrade,
+        areaM2: 0, netAreaM2: 0, perimeterM: 0,
+        materialItems: [],
+        totalMaterialTnd: zero, estimatedLaborTnd: zero, grandTotalTnd: zero,
+        wasteMarginPercent: wasteMarginDefault, fieldNotes: [`Trade '${selectedTrade}' has no calculation formula yet.`],
+        tvaPercent, tvaAmountTnd: zero, timbreFiscalTnd: zero,
+        retenueGarantiePercent: retenueGarantie, retenueGarantieTnd: zero,
+        totalTtcTnd: zero, netAPayerTnd: zero,
+      };
     }
 
     // Convert result to target currency
@@ -551,27 +610,27 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
           </button>
         </div>
 
-        {/* 12 Trade Badges Grid */}
+        {/* Trade Badges Grid — Phase B: dynamic from trade repository/API */}
         <div className="relative z-10 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
-          {[
-            { id: 'placo', label: 'PLACO / PLÂTRE', sub: 'أسقف وجدران جبس', icon: Layers },
-            { id: 'peinture', label: 'PEINTURE', sub: 'دهان وطلاء', icon: Paintbrush },
-            { id: 'carrelage', label: 'CARRELAGE', sub: 'تبليط وسيراميك', icon: Ruler },
-            { id: 'maconnerie', label: 'MAÇONNERIE', sub: 'بناء بالأجر', icon: Hammer },
-            { id: 'plomberie', label: 'PLOMBERIE', sub: 'سباكة وصحي', icon: Droplet },
-            { id: 'electricite', label: 'ÉLECTRICITÉ', sub: 'كهرباء وإنارة', icon: Zap },
-            { id: 'etancheite', label: 'ÉTANCHÉITÉ', sub: 'عزل مائي', icon: Umbrella },
-            { id: 'isolation', label: 'ISOLATION', sub: 'عزل حراري', icon: Sun },
-            { id: 'menuiserie', label: 'MENUISERIE', sub: 'أبواب وشبابيك', icon: DoorClosed },
-            { id: 'sols', label: 'SOLS & PARQUET', sub: 'أرضيات وباركيه', icon: Trees },
-            { id: 'facade', label: 'FAÇADE', sub: 'واجهات خارجية', icon: Shield },
-            { id: 'demolition', label: 'DÉMOLITION', sub: 'هدم وأنقاض', icon: Trash2 },
-          ].map(t => {
-            const isSelected = selectedTrade === t.id;
+          {tradesLoading && (
+            <div className="col-span-full text-xs text-slate-400 py-4">Loading trades…</div>
+          )}
+          {tradesError && !tradesLoading && (
+            <div className="col-span-full text-xs text-amber-400 py-4">⚠ {tradesError}</div>
+          )}
+          {!tradesLoading && !tradesError && trades.length === 0 && (
+            <div className="col-span-full text-xs text-slate-400 py-4">No trades available.</div>
+          )}
+          {!tradesLoading && trades.map(t => {
+            const isSelected = selectedTrade === t.code;
+            const meta = TRADE_UI_META[t.code];
+            const icon = meta?.icon;
+            const label = meta?.label || t.labelFr || t.code;
+            const sub = meta?.sub;
             return (
               <button
                 key={t.id}
-                onClick={() => setSelectedTrade(t.id as TradeCategory)}
+                onClick={() => setSelectedTrade(t.code)}
                 className={`p-2.5 rounded-2xl border text-left transition-all flex flex-col justify-between cursor-pointer ${
                   isSelected
                     ? 'bg-gradient-to-br from-amber-400 to-amber-500 text-slate-950 border-amber-300 shadow-lg shadow-amber-500/20 font-black'
@@ -579,12 +638,18 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
                 }`}
               >
                 <div className="flex items-center gap-1.5 mb-1">
-                  <t.icon className={`w-3.5 h-3.5 ${isSelected ? 'text-slate-950' : 'text-amber-400'}`} />
-                  <div className="text-xs font-black tracking-tight truncate">{t.label}</div>
+                  {icon ? (
+                    icon({ className: `w-3.5 h-3.5 ${isSelected ? 'text-slate-950' : 'text-amber-400'}` })
+                  ) : (
+                    <span className={`text-xs ${isSelected ? 'text-slate-950' : 'text-amber-400'}`}>•</span>
+                  )}
+                  <div className="text-xs font-black tracking-tight truncate">{label}</div>
                 </div>
-                <div className={`text-[10px] font-bold truncate ${isSelected ? 'text-slate-900' : 'text-slate-400'}`}>
-                  {t.sub}
-                </div>
+                {sub && (
+                  <div className={`text-[10px] font-bold truncate ${isSelected ? 'text-slate-900' : 'text-slate-400'}`}>
+                    {sub}
+                  </div>
+                )}
               </button>
             );
           })}
@@ -1338,6 +1403,14 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
                   </select>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Phase B — Dynamic trade (no calculation formula yet) */}
+          {!['placo','peinture','carrelage','maconnerie','plomberie','electricite','etancheite','isolation','menuiserie','sols','facade','demolition'].includes(selectedTrade) && (
+            <div className="p-4 rounded-2xl border border-amber-500/20 bg-amber-950/20 text-amber-300 text-sm">
+              <div className="font-bold mb-1">Trade: {selectedTrade}</div>
+              <div className="text-xs opacity-80">This trade was imported dynamically. A calculation formula is not available yet — materials can still be quoted manually.</div>
             </div>
           )}
 

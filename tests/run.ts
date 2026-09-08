@@ -74,6 +74,7 @@ async function main() {
   const { runMaterialPriceTests } = await import('./materials.test');
   const { runTradePhase2aTests } = await import('./trades_phase2a.test');
   const { runTradePhase2bTests } = await import('./trades_phase2b.test');
+  const { runTradePhaseBTests } = await import('./trades_phaseB.test');
   const { runDevisTests } = await import('./devis.test');
   const { runSupplierTests } = await import('./suppliers.test');
   const { runCatalogImportCsvTests } = await import('./catalogImportCsv.test');
@@ -95,6 +96,7 @@ async function main() {
   await runMaterialPriceTests();
   await runTradePhase2aTests();
   await runTradePhase2bTests();
+  await runTradePhaseBTests();
   await runDevisTests();
   await runSupplierTests();
   await runCatalogImportCsvTests();
