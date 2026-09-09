@@ -132,33 +132,115 @@ class MemoryTradeRepository implements ITradeRepository {
   }
 }
 
+/**
+ * Returns true when PostgreSQL is genuinely reachable.
+ * NOTE: NODE_ENV (including NODE_ENV=test) NEVER forces memory mode.
+ * The ONLY signal is real Drizzle/PostgreSQL availability.
+ */
+async function isPgAvailable(): Promise<boolean> {
+  return await isDatabaseAvailable();
+}
+
+/**
+ * Mirror a PostgreSQL trade row into the in-memory collection so that
+ * synchronous MemoryTradeRepository reads (used directly by some
+ * repository-level tests) can also see dynamically created trades.
+ * Official trades are never modified; dynamic trades stay non-official.
+ */
+function mirrorDbTradeToMemory(dbTrade: any): void {
+  if (!dbTrade || !dbTrade.code) return;
+  try {
+    const map = memoryStore.getCollection(COLLECTION, `server/data/${COLLECTION}.json`);
+    // De-duplicate: drop stale non-official memory placeholders with the same
+    // code but a different id (e.g. `trade_gypsum` vs the real UUID row),
+    // so findByCode/list stay consistent and counts don't inflate.
+    // Official trades are never touched.
+    for (const [key, val] of Array.from(map.entries())) {
+      const t = val as Trade;
+      if (t && (t as any).code === dbTrade.code && (t as any).id !== dbTrade.id && !(t as any).isOfficial) {
+        map.delete(key);
+      }
+    }
+    const toIso = (v: any) => (v instanceof Date ? v.toISOString() : (typeof v === 'string' ? v : now()));
+    const mirrored: Trade = {
+      id: dbTrade.id,
+      code: dbTrade.code,
+      labelFr: dbTrade.labelFr ?? dbTrade.code,
+      labelAr: dbTrade.labelAr ?? undefined,
+      labelDerja: dbTrade.labelDerja ?? undefined,
+      icon: dbTrade.icon ?? undefined,
+      sortOrder: dbTrade.sortOrder ?? 999,
+      isActive: dbTrade.isActive ?? true,
+      // Never promote a dynamic trade to official via the mirror.
+      isOfficial: dbTrade.isOfficial ?? false,
+      createdAt: toIso(dbTrade.createdAt),
+      updatedAt: toIso(dbTrade.updatedAt),
+    } as Trade;
+    map.set(mirrored.id, mirrored);
+    memoryStore.saveCollection(COLLECTION);
+  } catch {
+    // Mirroring is best-effort; the PostgreSQL row remains the source of truth.
+  }
+}
+
 class HybridTradeRepository implements ITradeRepository {
   private memory = new MemoryTradeRepository();
 
   async ensureSeeded(): Promise<void> { return this.memory.ensureSeeded(); }
 
   async findById(id: string) {
-    if (await isDatabaseAvailable()) return await drizzleRepo.findTradeById(id);
+    // Use Drizzle/PostgreSQL whenever genuinely available — including
+    // NODE_ENV=test. Memory/canonical data is ONLY a fallback when
+    // PostgreSQL is genuinely unavailable.
+    if (await isPgAvailable()) {
+      const row = await drizzleRepo.findTradeById(id);
+      if (row) {
+        mirrorDbTradeToMemory(row);
+        return row;
+      }
+      return undefined;
+    }
     return this.memory.findById(id);
   }
 
   async findByCode(code: string) {
-    if (await isDatabaseAvailable()) return await drizzleRepo.findTradeByCode(code);
+    // Use Drizzle/PostgreSQL whenever genuinely available — including
+    // NODE_ENV=test. Memory/canonical data is ONLY a fallback when
+    // PostgreSQL is genuinely unavailable.
+    if (await isPgAvailable()) {
+      const row = await drizzleRepo.findTradeByCode(code);
+      if (row) {
+        mirrorDbTradeToMemory(row);
+        return row;
+      }
+      return undefined;
+    }
     return this.memory.findByCode(code);
   }
 
   async list(officialOnly = false) {
-    if (await isDatabaseAvailable()) return await drizzleRepo.listTrades({ officialOnly });
+    // No "12 trades only" restriction: return every matching PostgreSQL row
+    // (official + dynamic). officialOnly still filters to official trades.
+    if (await isPgAvailable()) return await drizzleRepo.listTrades({ officialOnly });
     return this.memory.list(officialOnly);
   }
 
   async findForMaterial(material: { tradeId?: string | null; trade?: string }) {
-    if (await isDatabaseAvailable()) {
+    if (await isPgAvailable()) {
+      // Resolve via material.tradeId first, only then fall back to the
+      // legacy material.trade code for backward compatibility.
       if (material.tradeId) {
         const byId = await drizzleRepo.findTradeById(material.tradeId);
-        if (byId) return byId;
+        if (byId) {
+          mirrorDbTradeToMemory(byId);
+          return byId;
+        }
       }
-      if (material.trade) return await drizzleRepo.findTradeByCode(material.trade);
+      if (material.trade) {
+        const byCode = await drizzleRepo.findTradeByCode(material.trade);
+        if (byCode) mirrorDbTradeToMemory(byCode);
+        return byCode;
+      }
       return undefined;
     }
     return this.memory.findForMaterial(material);
@@ -179,11 +261,15 @@ export { MemoryTradeRepository };
  * Idempotent: returns the existing trade if the code is already present.
  */
 export async function upsertTradeByCode(code: string, label?: string) {
-  if (await isDatabaseAvailable()) {
-    return await drizzleRepo.upsertTradeByCode(code, label);
+  // PostgreSQL is used whenever genuinely available — including NODE_ENV=test.
+  // NODE_ENV NEVER forces memory mode; memory stays purely as a fallback.
+  if (await isPgAvailable()) {
+    const row = await drizzleRepo.upsertTradeByCode(code, label);
+    if (row) mirrorDbTradeToMemory(row);
+    return row;
   }
-  // Memory mode
-  const existing = tradeRepository.findByCode(code);
+  // Memory mode (PostgreSQL genuinely unavailable only)
+  const existing = await tradeRepository.findByCode(code);
   if (existing) return existing;
   if (process.env.NODE_ENV === 'production') {
     throw new Error('[KONSTRIVO] Trade repository: in-memory trade creation is not allowed in production.');

@@ -72,11 +72,15 @@ export async function upsertMaterialByCode(data: {
 export async function listMaterials({ trade, category, search, page = 1, limit = 20 }: any) {
   const db = await getDatabase();
   if (!db) return { data: [], page, limit, total: 0 };
-  let q = db.select().from(materials).where(eq(materials.isDeleted, false));
-  if (trade) q = q.where(eq(materials.trade, trade));
-  if (category) q = q.where(eq(materials.category, category));
-  if (search) q = q.where(sql`${materials.nameFr} ILIKE ${`%${search}%`}`);
-  const all = await q;
+  // Single .where(and(...)): chained .where() calls OVERWRITE each other in
+  // drizzle-orm (see drizzlePriceRepository), which would silently drop the
+  // is_deleted filter. Search restores the memory-repo contract (code +
+  // nameFr) so code-based lookups (findMaterialIdByCode) resolve.
+  const conditions: any[] = [eq(materials.isDeleted, false)];
+  if (trade) conditions.push(eq(materials.trade, trade));
+  if (category) conditions.push(eq(materials.category, category));
+  if (search) conditions.push(sql`(${materials.nameFr} ILIKE ${`%${search}%`} OR ${materials.code} ILIKE ${`%${search}%`})`);
+  const all = await db.select().from(materials).where(and(...conditions));
   const total = all.length;
   const start = (page - 1) * limit;
   const data = all.slice(start, start + limit);

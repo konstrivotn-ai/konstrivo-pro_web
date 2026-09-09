@@ -173,9 +173,8 @@ export async function listDevis(filters: any) {
 export async function createDevis(input: any) {
   const db = await getDatabase();
   if (!db) throw new Error('Database not available');
-  const tx = await db.transaction();
-  try {
-    const devisNumber = await generateDevisNumber(db);
+  return db.transaction(async (tx: any) => {
+    const devisNumber = await generateDevisNumber(tx);
     const now = new Date();
     const itemsInput: any[] = Array.isArray(input.items) ? input.items : [];
 
@@ -230,17 +229,19 @@ export async function createDevis(input: any) {
       });
     }
 
-    // Idempotency: store idempotency key if provided
+    // Idempotency: store idempotency key if provided (same atomic transaction).
     if (input.idempotencyKey) {
       await tx.insert(idempotencyKeys).values({ key: input.idempotencyKey, entityType: 'devis', entityId: inserted.id, responseSnapshot: JSON.stringify({ id: inserted.id }) }).returning();
     }
 
-    await tx.commit();
-    return findDevisById(inserted.id);
-  } catch (err) {
-    await tx.rollback();
-    throw err;
-  }
+    // Fetch the committed-row shape INSIDE the transaction: the row is not yet
+    // visible to a separate `db` connection (it commits only when this callback
+    // resolves). Using `tx` here keeps the read atomic with the writes.
+    const [d] = await tx.select().from(devis).where(eq(devis.id, inserted.id)).limit(1);
+    const items = await tx.select().from(devisItems).where(eq(devisItems.devisId, inserted.id));
+    items.sort((a: any, b: any) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0));
+    return mapDevisRowToClient(d, items);
+  });
 }
 
 export async function updateDevis(id: string, patch: any, expectedVersion?: number) {

@@ -12,7 +12,7 @@
  * Run: npx tsx tests/placoPriceLookup.test.ts
  */
 import { strict as assert } from 'node:assert';
-import { buildPriceMap, mergeRates, priceKeysFor, CANONICAL_PLACO_CODE_ALIASES } from '../src/utils/priceLookup';
+import { buildPriceMap, buildPriceMapWithTrade, mergeRates, priceKeysFor, CANONICAL_PLACO_CODE_ALIASES, ResolvedPrice } from '../src/utils/priceLookup';
 import { calculatePlaco, PlacoInput } from '../src/utils/calculations';
 import { DEFAULT_MARKET_RATES } from '../src/data/marketRates';
 import { MaterialRate } from '../src/types';
@@ -132,7 +132,10 @@ const listPrices = (market: string) =>
       effectiveTo: undefined, createdAt: r.updatedAt, updatedAt: r.updatedAt, version: r.version, isDeleted: false,
     }));
 
+// TN_MAP for buildPriceMap tests (backward-compatible Map<string, number>)
 const TN_MAP = buildPriceMap(listPrices('tn'));
+// TN_MAP_WITH_TRADE for mergeRates tests (needs ResolvedPrice)
+const TN_MAP_WITH_TRADE = buildPriceMapWithTrade(listPrices('tn'));
 
 test('buildPriceMap: TN canonical codes resolve under legacy business ids (not 0)', () => {
   assert.equal(TN_MAP.get('plaque_ba13_standard'), 32.0);
@@ -179,7 +182,7 @@ test('memory/dev path unchanged: materialId legacy slug still resolves, UUID nev
 // ════ 3) mergeRates semantics with aliased keys ════
 test('mergeRates: server price overrides cached value for the aliased slug (server priority)', () => {
   const prev: MaterialRate[] = DEFAULT_MARKET_RATES.filter(r => r.id === 'plaque_ba13_standard');
-  const merged = mergeRates(prev, new Map([['plaque_ba13_standard', 32.0]]));
+  const merged = mergeRates(prev, new Map<string, ResolvedPrice>([['plaque_ba13_standard', { price: 32.0, trade: 'placo', tradeId: null }]]));
   assert.equal(merged[0].unitPriceTnd, 32.0);
   assert.equal(merged[0].nameFr, prev[0].nameFr, 'identity fields preserved — price-only update');
 });
@@ -191,15 +194,15 @@ test('mergeRates: local value kept when no server price (offline fallback preser
 });
 
 test('mergeRates: aliased codes append their business id (never the raw canonical code)', () => {
-  const merged = mergeRates([], TN_MAP);
+  const merged = mergeRates([], TN_MAP_WITH_TRADE);
   assert.equal(merged.find(r => r.id === 'plaque-ba13-standard-3m'), undefined);
   assert.ok(merged.find(r => r.id === 'plaque_ba13_standard'), 'business id rate present');
   assert.ok(merged.every(r => !r.id.includes('-')), 'every merged id is a legacy business id');
 });
 
 // ════ 4) calculatePlaco integration — the production flow, 4 mandatory cases ════
-const RATES_PROD = mergeRates([], TN_MAP);                     // production: empty cache, server-only
-const RATES_CACHED = mergeRates(DEFAULT_MARKET_RATES, TN_MAP); // dev / cached barème overridden by server
+const RATES_PROD = mergeRates([], TN_MAP_WITH_TRADE);                     // production: empty cache, server-only
+const RATES_CACHED = mergeRates(DEFAULT_MARKET_RATES, TN_MAP_WITH_TRADE); // dev / cached barème overridden by server
 const RATES_ZERO: MaterialRate[] = [];                         // unresolved baseline (the bug state)
 
 const EXPECTED_TN: Record<string, number> = {
@@ -295,7 +298,7 @@ for (const { label, input } of CASES) {
 }
 
 // ════ 5) Partial catalog: TN still wins where present, safe 0 where absent ════
-const PARTIAL_MAP = buildPriceMap(listPrices('tn').filter(p => !['dalle-60x60', 'vis-trpf-1000', 'laine-verre-12'].includes(p.code)));
+const PARTIAL_MAP = buildPriceMapWithTrade(listPrices('tn').filter(p => !['dalle-60x60', 'vis-trpf-1000', 'laine-verre-12'].includes(p.code)));
 const PARTIAL_RATES = mergeRates([], PARTIAL_MAP);
 const demontable = calculatePlaco(CASES[2].input, PARTIAL_RATES);
 

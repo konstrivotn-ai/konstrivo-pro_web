@@ -56,6 +56,26 @@ export const materials = pgTable('materials', {
   idxMaterialsCompany: index('idx_materials_company').on(table.companyId),
 }));
 
+// ── Trade ↔ Service association (Phase D) ─────────────────────────────────────
+// Normalized, data-driven services per trade. A newly imported trade can have
+// services defined here WITHOUT any source code change. Official trades are
+// seeded; dynamic trades can be populated via admin/API.
+export const tradeServices = pgTable('trade_services', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  tradeId: uuid('trade_id').notNull().references(() => trades.id, { onDelete: 'cascade' }),
+  nameFr: varchar('name_fr', { length: 150 }).notNull(),
+  nameAr: varchar('name_ar', { length: 150 }),
+  defaultUnit: varchar('default_unit', { length: 20 }).notNull().default('m²'),
+  suggestedRateTnd: numeric('suggested_rate_tnd', { precision: 12, scale: 3 }),
+  isActive: boolean('is_active').notNull().default(true),
+  sortOrder: integer('sort_order').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => ({
+  idxTradeServicesTradeId: index('idx_trade_services_trade_id').on(table.tradeId),
+  idxTradeServicesActive: index('idx_trade_services_active').on(table.isActive),
+}));
+
 export const priceSources = pgTable('price_sources', {
   code: varchar('code', { length: 50 }).primaryKey(),
   name: varchar('name', { length: 100 }).notNull(),

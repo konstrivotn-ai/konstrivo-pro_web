@@ -41,7 +41,7 @@
  */
 import 'dotenv/config';
 import { and, eq, isNull } from 'drizzle-orm';
-import { materialPrices, materials, priceSources, trades } from './schema';
+import { materialPrices, materials, priceSources, trades, tradeServices } from './schema';
 import { DEFAULT_MARKET_RATES } from '../../src/data/marketRates';
 import { PRICE_SOURCES } from '../repositories/seed';
 import { config } from '../config';
@@ -78,6 +78,8 @@ interface SeedStats {
   pricesToCreate: number;
   pricesUpdated: number;
   pricesUnchanged: number;
+  servicesInserted: number;
+  servicesExisting: number;
 }
 
 const stats: SeedStats = {
@@ -91,6 +93,70 @@ const stats: SeedStats = {
   pricesToCreate: 0,
   pricesUpdated: 0,
   pricesUnchanged: 0,
+  servicesInserted: 0,
+  servicesExisting: 0,
+};
+
+// Phase D — canonical services per official trade (data-driven, not hardcoded in code).
+// These seed the trade_services table so the calculator can resolve services
+// from the database for any trade, including dynamic ones added later.
+const OFFICIAL_TRADE_SERVICES: Record<string, Array<{ nameFr: string; nameAr: string; unit: string; rate: number }>> = {
+  placo: [
+    { nameFr: 'Pose de cloisons sèches', nameAr: 'تركيب جدران جافة', unit: 'm²', rate: 18 },
+    { nameFr: 'Faux plafonds BA13', nameAr: 'أسقف صناعية جبس', unit: 'm²', rate: 20 },
+    { nameFr: 'Doublage mural collé', nameAr: 'عزل جدار لاصق', unit: 'm²', rate: 16 },
+    { nameFr: 'Caisson retombée', nameAr: 'إضاءة مخفية', unit: 'ml', rate: 25 },
+  ],
+  peinture: [
+    { nameFr: 'Préparation de surface', nameAr: 'تحضير السطح', unit: 'm²', rate: 5 },
+    { nameFr: 'Peinture acrylique intérieure', nameAr: 'دهان أكريليك داخلي', unit: 'm²', rate: 8 },
+    { nameFr: 'Peinture satinée', nameAr: 'دهان ساتان', unit: 'm²', rate: 10 },
+    { nameFr: 'Enduit décoratif', nameAr: 'جص ديكوري', unit: 'm²', rate: 15 },
+  ],
+  carrelage: [
+    { nameFr: 'Pose droite carrelage', nameAr: 'تبليط مستقيم', unit: 'm²', rate: 22 },
+    { nameFr: 'Pose diagonale', nameAr: 'تبليط قطري', unit: 'm²', rate: 28 },
+    { nameFr: 'Jointoiement', nameAr: 'حشو الفواصل', unit: 'm²', rate: 4 },
+  ],
+  maconnerie: [
+    { nameFr: 'Maçonnerie brique', nameAr: 'بناء بالطوب', unit: 'm²', rate: 15 },
+    { nameFr: 'Maçonnerie bloc béton', nameAr: 'بناء بالبلوك', unit: 'm²', rate: 18 },
+    { nameFr: 'Enduit ciment', nameAr: 'جص إسمنتي', unit: 'm²', rate: 12 },
+  ],
+  plomberie: [
+    { nameFr: 'Réseau PPR', nameAr: 'شبكة PPR', unit: 'point', rate: 45 },
+    { nameFr: 'Évacuation PVC', nameAr: 'صرف PVC', unit: 'ml', rate: 20 },
+    { nameFr: 'Robinetterie', nameAr: 'سباكة وتركيب', unit: 'unit', rate: 35 },
+  ],
+  electricite: [
+    { nameFr: 'Câblage éclairage', nameAr: 'أسلاك الإنارة', unit: 'point', rate: 25 },
+    { nameFr: 'Prises de courant', nameAr: 'مآخذ كهرباء', unit: 'point', rate: 20 },
+    { nameFr: 'Tableau électrique', nameAr: 'لوحة كهربائية', unit: 'unit', rate: 150 },
+  ],
+  etancheite: [
+    { nameFr: 'Membrane bitumineuse', nameAr: 'غشاء بيتوميني', unit: 'm²', rate: 18 },
+    { nameFr: 'Résine liquide', nameAr: 'راتنج سائل', unit: 'm²', rate: 22 },
+  ],
+  isolation: [
+    { nameFr: 'Isolation thermique laine de verre', nameAr: 'عزل حراري صوف زجاجي', unit: 'm²', rate: 14 },
+    { nameFr: 'Polystyrène expansé', nameAr: 'بولسترين ممدد', unit: 'm²', rate: 12 },
+  ],
+  menuiserie: [
+    { nameFr: 'Pose de portes', nameAr: 'تركيب أبواب', unit: 'unit', rate: 60 },
+    { nameFr: 'Pose de fenêtres', nameAr: 'تركيب نوافذ', unit: 'unit', rate: 80 },
+  ],
+  sols: [
+    { nameFr: 'Pose parquet stratifié', nameAr: 'تركيب باركيه', unit: 'm²', rate: 12 },
+    { nameFr: 'Béton ciré', nameAr: 'إسمنت مصقول', unit: 'm²', rate: 35 },
+  ],
+  facade: [
+    { nameFr: 'Enduit monocouche', nameAr: 'جص أحادي الطبقة', unit: 'm²', rate: 18 },
+    { nameFr: 'Peinture façade', nameAr: 'دهان واجهة', unit: 'm²', rate: 12 },
+  ],
+  demolition: [
+    { nameFr: 'Démolition cloisons', nameAr: 'هدم جدران', unit: 'm²', rate: 8 },
+    { nameFr: 'Évacuation gravats', nameAr: 'نقل الأنقاض', unit: 'm²', rate: 6 },
+  ],
 };
 
 function todayIso(): string {
@@ -303,6 +369,30 @@ async function main(): Promise<void> {
       }).where(eq(materialPrices.id, currentPrice.id));
     }
 
+    // ── 5) trade_services — seed canonical services per official trade ──────
+    for (const [tradeCode, services] of Object.entries(OFFICIAL_TRADE_SERVICES)) {
+      const tradeId = tradeCodeToId.get(tradeCode);
+      if (!tradeId || tradeId.startsWith('dry-run-')) continue;
+      for (let i = 0; i < services.length; i++) {
+        const svc = services[i];
+        // Idempotency: skip if a service with the same name already exists for this trade
+        const nameExists = await db.select({ id: tradeServices.id }).from(tradeServices)
+          .where(and(eq(tradeServices.tradeId, tradeId), eq(tradeServices.nameFr, svc.nameFr)))
+          .limit(1);
+        if (nameExists.length > 0) { stats.servicesExisting++; continue; }
+        stats.servicesInserted++;
+        if (DRY_RUN) continue;
+        await db.insert(tradeServices).values({
+          tradeId,
+          nameFr: svc.nameFr,
+          nameAr: svc.nameAr,
+          defaultUnit: svc.unit,
+          suggestedRateTnd: svc.rate.toFixed(3),
+          sortOrder: i,
+        });
+      }
+    }
+
     // ── Summary ──────────────────────────────────────────────────────────────
     const label = DRY_RUN ? 'WOULD' : 'DID';
     console.log('[KONSTRIVO-SEED] ── Summary ─────────────────────────────');
@@ -312,6 +402,7 @@ async function main(): Promise<void> {
       console.log(`[KONSTRIVO-SEED] prices        : ${stats.pricesToCreate} would follow newly created materials (run without --dry-run first)`);
     }
     console.log(`[KONSTRIVO-SEED] prices        : ${label} create ${stats.pricesCreated}, update ${stats.pricesUpdated}, unchanged ${stats.pricesUnchanged}`);
+    console.log(`[KONSTRIVO-SEED] trade_services: ${label} insert ${stats.servicesInserted}, existing ${stats.servicesExisting}`);
     console.log(`[KONSTRIVO-SEED] done in ${Date.now() - startedAt}ms ${DRY_RUN ? '(dry-run — nothing was written)' : ''}`);
   } finally {
     try { await client.end({ timeout: 1 }); } catch { /* never connected */ }

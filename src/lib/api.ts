@@ -287,6 +287,15 @@ export async function listTrades(opts?: { officialOnly?: boolean }) {
   return await res.json().catch(() => ({ data: [] }));
 }
 
+// Phase D — data-driven services for a trade (from trade_services table).
+export async function listTradeServices(tradeId: string): Promise<any[]> {
+  const url = `${BASE}/trades/${encodeURIComponent(tradeId)}/services`;
+  const res = await apiFetch(url, { method: 'GET' });
+  if (!res.ok) return [];
+  const json = await res.json().catch(() => ({ data: [] }));
+  return Array.isArray(json?.data) ? json.data : [];
+}
+
 // ---------------- Catalog (Admin → PostgreSQL) ----------------
 /**
  * Step 5 — upsert an OFFICIAL material + its official current price.
@@ -357,6 +366,71 @@ export async function importCatalogCsv(
     throw err;
   }
   return payload;
+}
+
+// ─────────────── Phase C — Smart Mapping import (CSV + XLSX) ───────────────
+/**
+ * Shared raw-fetch uploader for the Phase C Smart Mapping endpoints
+ * (POST /catalog/preview and POST /catalog/import). Same protections as
+ * importCatalogCsv: multipart body keeps its own boundary Content-Type and
+ * the Bearer token is attached manually.
+ */
+async function catalogFileRequest(
+  path: string,
+  file: File,
+  opts?: { mapping?: Record<string, string>; countryCode?: string; currencyCode?: string }
+): Promise<any> {
+  const q = new URLSearchParams();
+  if (opts?.countryCode) q.set('countryCode', opts.countryCode);
+  if (opts?.currencyCode) q.set('currencyCode', opts.currencyCode);
+  if (opts?.mapping) q.set('mapping', JSON.stringify(opts.mapping));
+
+  const form = new FormData();
+  form.append('file', file, file.name);
+
+  const headers: Record<string, string> = {};
+  if (getAccessToken()) headers.Authorization = `Bearer ${getAccessToken()}`;
+
+  const res = await fetch(`${BASE}${path}${q.toString() ? '?' + q.toString() : ''}`, {
+    method: 'POST',
+    body: form,
+    headers,
+    credentials: 'include',
+  });
+
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err: any = new Error((payload as any)?.error?.message || 'Catalog import request failed');
+    err.status = res.status;
+    err.report = (payload as any)?.data;
+    throw err;
+  }
+  return payload;
+}
+
+/**
+ * Phase C — Upload a .csv/.xlsx file to POST /catalog/preview.
+ * Returns the detected columns, the suggested mapping, sample normalized
+ * rows and the validation report. NO catalog data is written.
+ */
+export async function previewCatalogImport(
+  file: File,
+  opts?: { mapping?: Record<string, string>; countryCode?: string; currencyCode?: string }
+): Promise<any> {
+  return catalogFileRequest('/catalog/preview', file, opts);
+}
+
+/**
+ * Phase C — Upload a .csv/.xlsx file to POST /catalog/import with the Admin
+ * confirmed mapping. Commits through the server-side transactional pipeline
+ * (dynamic trades + ONE transaction). Refused (400) while required fields
+ * are unmapped or any row is invalid.
+ */
+export async function importCatalogFile(
+  file: File,
+  opts?: { mapping?: Record<string, string>; countryCode?: string; currencyCode?: string }
+): Promise<any> {
+  return catalogFileRequest('/catalog/import', file, opts);
 }
 
 // ─────────────── Price Update Foundation (Step 8) ───────────────────────────

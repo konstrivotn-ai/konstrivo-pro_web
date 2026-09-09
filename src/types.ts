@@ -48,11 +48,19 @@ export interface Trade {
   isOfficial: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Phase D — data-driven service labels associated with this trade (optional). */
+  services?: string[];
 }
 
 export interface MaterialRate {
   id: string;
-  category: TradeCategory;
+  /**
+   * Phase D — category is now a free string (not the 12-value TradeCategory
+   * union) so dynamic trades are first-class. The 12 official trades still use
+   * their canonical codes; dynamic trades use their own code. Consumers that
+   * need the official union can still narrow via TradeCategory.
+   */
+  category: string;
   nameFr: string;
   nameAr: string;
   nameDerja: string;

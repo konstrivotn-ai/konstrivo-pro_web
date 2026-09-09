@@ -14,13 +14,14 @@ import {
 import { 
   calculatePlaco, calculatePeinture, calculateCarrelage, calculateMaconnerie,
   calculatePlomberie, calculateElectricite, calculateEtancheite, calculateIsolation,
-  calculateMenuiserie, calculateSols, calculateFacade, calculateDemolition,
+  calculateMenuiserie, calculateSols, calculateFacade, calculateDemolition, calculateGeneric,
   PlacoInput, PeintureInput, CarrelageInput, MaconnerieInput,
   PlomberieInput, ElectriciteInput, EtancheiteInput, IsolationInput,
-  MenuiserieInput, SolsInput, FacadeInput, DemolitionInput
+  MenuiserieInput, SolsInput, FacadeInput, DemolitionInput, GenericInput
 } from '../utils/calculations';
 import { formatCalculationForWhatsApp, openWhatsApp } from '../utils/whatsapp';
 import { COUNTRIES_CONFIG, CURRENCY_SYMBOLS, convertFromTnd, formatPrice } from '../data/countryConfig';
+import { loadServicesForTrade, TradeServiceConfig } from '../data/tradeServices';
 import { auditCalculationResult, generateAuditPdfHtml } from '../utils/auditEngine';
 import { listTrades } from '../lib/api';
 
@@ -95,6 +96,19 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
   const [selectedTrade, setSelectedTrade] = useState<string>('placo');
   const [copiedSuccess, setCopiedSuccess] = useState(false);
   const [addedSuccess, setAddedSuccess] = useState(false);
+
+  // Phase D — data-driven services loaded from DB (authoritative for dynamic trades)
+  const [resolvedServices, setResolvedServices] = useState<TradeServiceConfig[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const tradeObj = trades.find(t => t.code === selectedTrade);
+    async function load() {
+      const services = await loadServicesForTrade(tradeObj?.id, selectedTrade);
+      if (!cancelled) setResolvedServices(services ?? []);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [selectedTrade, trades]);
 
   // FISCAL & DISPLAY OPTIONS (INGÉNIERIE & FISCALITÉ 2026)
   const [tvaPercent, setTvaPercent] = useState<number>(currentCountry.defaultVatRate);
@@ -199,6 +213,11 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
   const [demoThickness, setDemoThickness] = useState<number>(15.0);
   const [demoType, setDemoType] = useState<'cloison_brique_placo' | 'carrelage_chape' | 'beton'>('cloison_brique_placo');
   const [demoLaborRate, setDemoLaborRate] = useState<number>(12.0);
+
+  // 13. GENERIC / DYNAMIC TRADE STATE (Phase D)
+  const [genericArea, setGenericArea] = useState<number>(20.0);
+  const [genericLength, setGenericLength] = useState<number>(5.0);
+  const [genericLaborRate, setGenericLaborRate] = useState<number>(15.0);
 
   // CALCULATED RESULT
   const calculationResult: CalculationResult = useMemo(() => {
@@ -350,21 +369,20 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
       };
       result = calculateDemolition(input, rates);
     } else {
-      // Phase B — dynamic trade (no calculation formula available yet).
-      // Return a minimal CalculationResult so the UI doesn't crash.
-      const zero = 0;
-      result = {
-        trade: selectedTrade as TradeCategory,
-        subType: selectedTrade,
-        subTypeTitle: selectedTrade,
-        areaM2: 0, netAreaM2: 0, perimeterM: 0,
-        materialItems: [],
-        totalMaterialTnd: zero, estimatedLaborTnd: zero, grandTotalTnd: zero,
-        wasteMarginPercent: wasteMarginDefault, fieldNotes: [`Trade '${selectedTrade}' has no calculation formula yet.`],
-        tvaPercent, tvaAmountTnd: zero, timbreFiscalTnd: zero,
-        retenueGarantiePercent: retenueGarantie, retenueGarantieTnd: zero,
-        totalTtcTnd: zero, netAPayerTnd: zero,
+      // Phase D — dynamic trade enters the generic/data-driven pipeline.
+      // No hardcoded branch: materials are resolved by trade/category and
+      // priced from the current rates table using documented generic rules.
+      const input: GenericInput = {
+        trade: selectedTrade,
+        areaM2: genericArea,
+        lengthM: genericLength,
+        wasteMarginPercent: wasteMarginDefault,
+        laborRatePerM2: genericLaborRate,
+        tvaPercent,
+        includeTimbre,
+        retenueGarantiePercent: retenueGarantie,
       };
+      result = calculateGeneric(input, rates);
     }
 
     // Convert result to target currency
@@ -1406,11 +1424,42 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
             </div>
           )}
 
-          {/* Phase B — Dynamic trade (no calculation formula yet) */}
+          {/* Phase D — Dynamic trade: generic/data-driven calculation panel */}
           {!['placo','peinture','carrelage','maconnerie','plomberie','electricite','etancheite','isolation','menuiserie','sols','facade','demolition'].includes(selectedTrade) && (
-            <div className="p-4 rounded-2xl border border-amber-500/20 bg-amber-950/20 text-amber-300 text-sm">
-              <div className="font-bold mb-1">Trade: {selectedTrade}</div>
-              <div className="text-xs opacity-80">This trade was imported dynamically. A calculation formula is not available yet — materials can still be quoted manually.</div>
+            <div className="space-y-4">
+              <div className="p-3 rounded-2xl border border-amber-500/20 bg-amber-950/20 text-amber-300 text-sm">
+                <div className="font-bold mb-1">Métier dynamique : {selectedTrade}</div>
+                <div className="text-xs opacity-80">Calcul générique appliqué — les matériaux sont résolus depuis le barème par catégorie de métier.</div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-300 mb-1 block">Surface (m²) :</label>
+                  <input
+                    type="number"
+                    value={genericArea}
+                    onChange={(e) => setGenericArea(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-300 mb-1 block">Longueur (ml) :</label>
+                  <input
+                    type="number"
+                    value={genericLength}
+                    onChange={(e) => setGenericLength(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-300 mb-1 block">Main d'œuvre (DT/m²) :</label>
+                  <input
+                    type="number"
+                    value={genericLaborRate}
+                    onChange={(e) => setGenericLaborRate(parseFloat(e.target.value) || 0)}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono font-bold"
+                  />
+                </div>
+              </div>
             </div>
           )}
 
@@ -1601,6 +1650,35 @@ export const CalculatorTab: React.FC<CalculatorTabProps> = ({
                 ))}
               </div>
             </div>
+
+            {/* Phase D — Data-driven services for the selected trade (DB-backed) */}
+            {(() => {
+              const tradeServices = resolvedServices;
+              if (tradeServices.length === 0) return null;
+              return (
+                <div className="bg-slate-950/60 border border-slate-800 rounded-2xl p-3 space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-slate-300">
+                    <Wrench className="w-3.5 h-3.5 text-amber-400" />
+                    <span>{lang === 'derja' ? 'خدمات المهنة' : 'Services du métier'} — {selectedTrade}</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                    {tradeServices.map((srv, idx) => (
+                      <div key={idx} className="flex items-center justify-between bg-slate-900/60 rounded-lg px-2 py-1.5 text-[10px] border border-slate-800/60">
+                        <div>
+                          <div className="text-slate-200 font-semibold">{srv.labelFr}</div>
+                          <div className="text-slate-500" dir="rtl">{srv.labelAr}</div>
+                        </div>
+                        {srv.suggestedRateTnd != null && (
+                          <span className="text-amber-400 font-mono font-bold shrink-0 ml-2">
+                            {srv.suggestedRateTnd} {currMeta.symbol}/{srv.defaultUnit || 'u'}
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Execution Steps (DTU Norms) Accordion */}
             {calculationResult.executionSteps && calculationResult.executionSteps.length > 0 && (

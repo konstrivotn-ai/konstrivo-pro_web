@@ -8,7 +8,7 @@
  */
 import { getDatabase } from '../db/client';
 import { trades } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 /**
  * Phase B — Create a trade by code if it does not already exist.
@@ -67,8 +67,9 @@ export async function listTrades(opts: { officialOnly?: boolean; includeInactive
   const { officialOnly = false, includeInactive = false } = opts;
   const db = await getDatabase();
   if (!db) return [];
-  let q = db.select().from(trades);
-  if (officialOnly) q = q.where(eq(trades.isOfficial, true));
-  if (!includeInactive) q = q.where(eq(trades.isActive, true));
+  const conditions: any[] = [];
+  if (officialOnly) conditions.push(eq(trades.isOfficial, true));
+  if (!includeInactive) conditions.push(eq(trades.isActive, true));
+  const q = conditions.length > 0 ? db.select().from(trades).where(and(...conditions)) : db.select().from(trades);
   return await q;
 }

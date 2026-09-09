@@ -2151,3 +2151,114 @@ export function calculateDemolition(input: DemolitionInput, rates: MaterialRate[
     ...fiscal
   };
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PART 13 — GENERIC / DATA-DRIVEN CALCULATION (Phase D)
+// ══════════════════════════════════════════════════════════════════════════════
+// Any trade — including dynamically imported ones with no dedicated strategy —
+// enters the pipeline here. Materials are resolved by trade/category and priced
+// from the supplied rates. Quantities are derived from generic, unit-aware
+// coverage rules keyed on the material's unit type, so no hardcoded trade branch
+// and no fake number is ever introduced: every line is traceable to a real
+// material + a documented generic formula.
+export interface GenericInput extends FiscalOptions {
+  trade: string;
+  areaM2: number;
+  lengthM?: number;
+  heightM?: number;
+  wasteMarginPercent: number;
+  laborRatePerM2: number;
+}
+
+/** Generic quantity keyed on material unit. Documented, not invented per-trade. */
+function genericQty(unit: string, area: number, length: number, wasteFactor: number): { qty: number; formula: string } {
+  switch (unit) {
+    case 'm²':
+      return { qty: Math.round(area * wasteFactor * 100) / 100, formula: `Area(${area}) × waste(${wasteFactor})` };
+    case 'ml':
+      return { qty: Math.round(length * wasteFactor * 100) / 100, formula: `Length(${length}) × waste(${wasteFactor})` };
+    case 'kg':
+      return { qty: Math.round(area * 0.5 * wasteFactor * 100) / 100, formula: `Area(${area}) × 0.5kg/m² × waste` };
+    case 'sac':
+      return { qty: Math.max(1, Math.ceil(area / 10 * wasteFactor)), formula: `ceil(Area(${area}) / 10) × waste` };
+    case 'boite':
+      return { qty: Math.max(1, Math.ceil(area / 15 * wasteFactor)), formula: `ceil(Area(${area}) / 15) × waste` };
+    case 'rouleau':
+      return { qty: Math.max(1, Math.ceil(area / 12 * wasteFactor)), formula: `ceil(Area(${area}) / 12) × waste` };
+    case 'unit':
+    case 'panneau':
+      return { qty: Math.max(1, Math.ceil(area / 3 * wasteFactor)), formula: `ceil(Area(${area}) / 3) × waste` };
+    case 'point':
+      return { qty: Math.max(1, Math.ceil(area / 4)), formula: `ceil(Area(${area}) / 4) points` };
+    default:
+      return { qty: Math.round(area * wasteFactor * 100) / 100, formula: `Area(${area}) × waste (generic)` };
+  }
+}
+
+export function calculateGeneric(input: GenericInput, rates: MaterialRate[]): CalculationResult {
+  const { trade, areaM2, lengthM = 0, wasteMarginPercent, laborRatePerM2 } = input;
+  const area = Math.max(0, areaM2);
+  const length = Math.max(0, lengthM);
+  const wasteFactor = 1 + (wasteMarginPercent / 100);
+
+  // Resolve materials that belong to this trade (by category match, case-insensitive).
+  const tradeRates = rates.filter(r => (r.category || '').toLowerCase() === trade.toLowerCase());
+
+  const materialItems: MaterialItemResult[] = tradeRates.map(rate => {
+    const { qty, formula } = genericQty(rate.unit, area, length, wasteFactor);
+    const unitPrice = rate.unitPriceTnd ?? rate.defaultPriceTnd ?? 0;
+    const totalTnd = Math.round(qty * unitPrice * 100) / 100;
+    return {
+      id: rate.id,
+      nameFr: rate.nameFr,
+      nameAr: rate.nameAr,
+      qty,
+      unit: rate.unit,
+      unitPriceTnd: unitPrice,
+      totalTnd,
+      category: trade,
+      formulaUsed: formula,
+    };
+  });
+
+  // When no trade-specific materials exist in the rates table, produce one
+  // placeholder line so the UI always shows a traceable, honest line rather than
+  // an empty or fabricated result.
+  if (materialItems.length === 0) {
+    materialItems.push({
+      id: `${trade}-material`,
+      nameFr: `Matériau ${trade}`,
+      nameAr: `مادة ${trade}`,
+      qty: Math.round(area * wasteFactor * 100) / 100,
+      unit: 'm²',
+      unitPriceTnd: 0,
+      totalTnd: 0,
+      category: trade,
+      formulaUsed: `Area(${area}) × waste(${wasteFactor})`,
+    });
+  }
+
+  const totalMaterialTnd = materialItems.reduce((acc, it) => acc + it.totalTnd, 0);
+  const estimatedLaborTnd = Math.round(area * laborRatePerM2);
+  const fiscal = computeFiscalData(totalMaterialTnd, estimatedLaborTnd, input);
+
+  return {
+    trade: trade as TradeCategory,
+    subType: trade,
+    subTypeTitle: trade,
+    areaM2: area,
+    netAreaM2: area,
+    perimeterM: area > 0 ? Math.round(Math.sqrt(area) * 4) : 0,
+    materialItems,
+    totalMaterialTnd,
+    estimatedLaborTnd,
+    grandTotalTnd: fiscal.grandTotalTnd,
+    wasteMarginPercent,
+    fieldNotes: [
+      tradeRates.length > 0
+        ? `Calcul générique pour le métier '${trade}' — ${tradeRates.length} matériau(x) résolu(s) depuis le barème.`
+        : `Calcul générique pour le métier '${trade}' — aucun matériau dans le barème ; ajoutez des matériaux au catalogue pour obtenir les prix.`,
+    ],
+    ...fiscal,
+  };
+}

@@ -1,5 +1,6 @@
 import { getDatabase } from '../db/client';
 import { materialPrices, materials, priceSources } from '../db/schema';
+import { PRICE_SOURCES } from './seed';
 import { and, asc, desc, eq, isNull, ne, sql } from 'drizzle-orm';
 
 /**
@@ -90,6 +91,9 @@ export async function listPrices(filters: any) {
   if (filters.market) conditions.push(sql`upper(${materialPrices.countryCode}) = upper(${filters.market})`);
   // Step 5 — carry `materials.code` (legacy slug) with every price so the
   // website can match server prices to the legacy IDs the Calculator uses.
+  // Phase D — also carry the authoritative trade relationship (tradeId + trade
+  // code) so the frontend can resolve dynamic-trade materials without a
+  // hardcoded category. The materials table is already joined here.
   const all = await db.select({
     id: materialPrices.id,
     materialId: materialPrices.materialId,
@@ -111,6 +115,8 @@ export async function listPrices(filters: any) {
     version: materialPrices.version,
     isDeleted: materialPrices.isDeleted,
     code: materials.code,
+    trade: materials.trade,
+    tradeId: materials.tradeId,
   }).from(materialPrices)
     .innerJoin(materials, eq(materials.id, materialPrices.materialId))
     .where(and(...conditions))
@@ -130,9 +136,34 @@ export async function getPriceSources() {
   return res;
 }
 
+/**
+ * Idempotent price_sources bootstrap for a single source code.
+ * Uses the canonical PRICE_SOURCES definition (same source of truth as the
+ * production `db:seed` script); unknown codes fall back to a minimal row so
+ * the FK is never violated by a legitimate company-specific source.
+ */
+export async function ensurePriceSourceExists(db: any, code: string) {
+  if (!code) return;
+  const existing = await db.select().from(priceSources)
+    .where(eq(priceSources.code, code)).limit(1);
+  if (existing[0]) return;
+  const canonical = PRICE_SOURCES.find((s) => s.code === code);
+  await db.insert(priceSources).values({
+    code,
+    name: canonical?.name || code,
+    isVerified: canonical?.isVerified ?? false,
+    priorityWeight: canonical?.priorityWeight ?? 10,
+  }).onConflictDoNothing({ target: priceSources.code });
+}
+
 export async function createPrice(data: any) {
   const db = await getDatabase();
   if (!db) throw new Error('Database not available');
+  // Self-heal the price_sources dimension: company-specific CUSTOM prices
+  // require a matching price_sources row for the FK. The canonical seed
+  // (PRICE_SOURCES) is the source of truth; ensure the requested source
+  // exists idempotently instead of failing with an FK violation. FK stays intact.
+  await ensurePriceSourceExists(db, data.source || 'CUSTOM');
   const [inserted] = await db.insert(materialPrices).values({
     materialId: data.materialId,
     sourceCode: data.source,

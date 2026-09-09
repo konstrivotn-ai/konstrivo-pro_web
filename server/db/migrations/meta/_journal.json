@@ -1,27 +1,35 @@
 {
-  "version": "7",
-  "dialect": "postgresql",
-  "entries": [
-    {
-      "idx": 0,
-      "version": "7",
-      "when": 1787387283565,
-      "tag": "0000_strange_pete_wisdom",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1787388427793,
-      "tag": "0001_tricky_lord_tyger",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1788257962802,
-      "tag": "0002_futuristic_loa",
-      "breakpoints": true
-    }
-  ]
+    "entries":  [
+                    {
+                        "idx":  0,
+                        "breakpoints":  true,
+                        "when":  1787387283565,
+                        "version":  "7",
+                        "tag":  "0000_strange_pete_wisdom"
+                    },
+                    {
+                        "idx":  1,
+                        "breakpoints":  true,
+                        "when":  1787388427793,
+                        "version":  "7",
+                        "tag":  "0001_tricky_lord_tyger"
+                    },
+                    {
+                        "idx":  2,
+                        "breakpoints":  true,
+                        "when":  1788257962802,
+                        "version":  "7",
+                        "tag":  "0002_futuristic_loa"
+                    },
+                },
+                    {
+                        "idx":  3,
+                        "breakpoints":  true,
+                        "when":  1746700000000,
+                        "version":  "7",
+                        "tag":  "0005_trade_services"
+                    }
+                ],
+    "version":  "7",
+    "dialect":  "postgresql"
 }

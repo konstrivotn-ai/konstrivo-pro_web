@@ -8,7 +8,7 @@
  * Run: npx tsx tests/priceLookup.test.ts
  */
 import { strict as assert } from 'node:assert';
-import { buildPriceMap, mergeRates, priceKey } from '../src/utils/priceLookup';
+import { buildPriceMap, mergeRates, priceKey, ResolvedPrice } from '../src/utils/priceLookup';
 import { MaterialRate } from '../src/types';
 
 let passed = 0;
@@ -88,7 +88,7 @@ test('mergeRates: server price overrides cached value for same legacy slug', () 
   const prev: MaterialRate[] = [
     { id: 'plaque_ba13_standard', category: 'placo', nameFr: 'BA13', nameAr: '', nameDerja: '', unit: 'unit', unitPriceTnd: 5, defaultPriceTnd: 5 },
   ];
-  const priceMap = new Map<string, number>([['plaque_ba13_standard', 30]]);
+  const priceMap = new Map<string, ResolvedPrice>([['plaque_ba13_standard', { price: 30, trade: 'placo', tradeId: null }]]);
   const merged = mergeRates(prev, priceMap);
   const ba13 = merged.find(r => r.id === 'plaque_ba13_standard');
   assert.equal(ba13?.unitPriceTnd, 30, 'server price 30 must override cached 5');
@@ -105,7 +105,7 @@ test('mergeRates: keeps local value when no server price (fallback preserved)', 
 
 test('mergeRates: appends server-only slugs (Tier 3)', () => {
   const prev: MaterialRate[] = [];
-  const priceMap = new Map<string, number>([['plaque_ba13_standard', 30]]);
+  const priceMap = new Map<string, ResolvedPrice>([['plaque_ba13_standard', { price: 30, trade: 'placo', tradeId: null }]]);
   const merged = mergeRates(prev, priceMap);
   assert.equal(merged.length, 1);
   assert.equal(merged[0].id, 'plaque_ba13_standard');

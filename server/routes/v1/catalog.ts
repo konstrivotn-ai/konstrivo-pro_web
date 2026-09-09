@@ -5,19 +5,26 @@ import { createLimiter } from '../../middleware/rateLimit';
 import { getPriceSourceSpec } from '../../priceSources/connector';
 import { runSaudiGastatUpdate } from '../../priceSources/saudiPipeline';
 import { validateBody, roundMoney } from '../../utils/validation';
-import { badRequest, payloadTooLarge, unsupportedMediaType, internalError } from '../../utils/errors';
-import { getDatabase } from '../../db/client';
+import { badRequest, payloadTooLarge, unsupportedMediaType } from '../../utils/errors';
 import { config } from '../../config';
 import { getBoundary, parseMultipart, isValidFileType, MultipartFile } from '../../utils/multipart';
 import { parseCsv } from '../../utils/csv';
-import { OFFICIAL_TRADES, upsertTradeByCode } from '../../repositories/tradeRepository';
-import { upsertMaterialByCode, findOfficialMaterialByCode } from '../../repositories/drizzleMaterialRepository';
+import { parseXlsxToRows } from '../../utils/xlsx';
+import {
+  IMPORT_MAX_ROWS,
+  resolveMapping,
+  normalizeAndValidateRows,
+  commitValidRows,
+  type ValidImportRow,
+  type FailedRow,
+} from '../../services/catalogImport';
 import {
   upsertOfficialPrice,
   submitPendingPriceUpdate,
   listPendingPriceUpdates,
   approvePendingPriceUpdate,
 } from '../../repositories/drizzlePriceRepository';
+import { upsertMaterialByCode } from '../../repositories/drizzleMaterialRepository';
 
 const router = Router();
 const priceUpdateLimiter = createLimiter('default', { max: 5, windowMs: 15 * 60 * 1000 });
@@ -133,57 +140,236 @@ router.post('/upsert',
   }
 );
 
-// ── Phase A + B — Admin bulk CSV import (transactional) ───────────────────────
-// POST /catalog/import-csv
+// ── Phase A + B + C — Admin bulk catalog import (transactional) ──────────────
+// POST /catalog/import-csv   (Phase A — CSV only, contract UNCHANGED)
+// POST /catalog/preview      (Phase C — CSV + XLSX, mapping + preview, no write)
+// POST /catalog/import       (Phase C — CSV + XLSX, mapping + transactional write)
 //
-// Replaces the old browser-side CSV parsing + N×POST /catalog/upsert flow:
-//   - The Admin UI uploads the RAW file; ALL parsing, validation and
-//     persistence happen HERE, server-side.
-//   - Accepts multipart/form-data (file part "file") OR a raw text/csv body.
-//   - Only .csv is accepted in Phase A/B (no Excel yet).
+// ALL parsing, validation and persistence happen SERVER-SIDE:
+//   - Accepts multipart/form-data (file part "file") OR a raw body
+//     (text/csv for CSV, application/vnd.openxmlformats-...sheet for XLSX).
+//   - CSV and XLSX go through the SAME pipeline (services/catalogImport.ts):
+//     Parser → Column Detection → Smart Mapping → Canonical Normalization →
+//     Validation → ONE transaction (materials + official prices).
 //   - EVERY row is validated BEFORE any database write; if ANY row is invalid
 //     the import is aborted with 400 and NOTHING is written (all-or-nothing).
-//   - All material/price writes run inside ONE database transaction; any
-//     unexpected database failure rolls the WHOLE batch back.
 //   - Unknown trade codes are auto-created as dynamic (non-official) trades
 //     so newly imported trades become immediately available in the trade
 //     selection UI without a hardcoded TypeScript/React entry (Phase B).
 //
 // Reuses the existing building blocks (no schema change):
 //   multipart validation (utils/multipart + config limits), the shared CSV
-//   parser (utils/csv), the Step 5 official upserts (upsertMaterialByCode +
-//   upsertOfficialPrice) and the CATALOG_OFFICIAL_MANAGE entitlement.
+//   parser (utils/csv), the safe XLSX reader (utils/xlsx), the Step 5
+//   official upserts and the CATALOG_OFFICIAL_MANAGE entitlement.
 
-const IMPORT_CSV_MAX_ROWS = 1000;
+/** Raw-body content types accepted by the import endpoints. */
+const IMPORT_RAW_TYPES = [
+  'multipart/form-data',
+  'text/csv',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/octet-stream',
+];
 
-/** Canonical import columns → accepted (normalized) header aliases. */
-const IMPORT_CSV_COLUMNS: Record<string, string[]> = {
-  reference: ['reference', 'reference_code', 'code', 'ref', 'sku'],
-  nameFr: ['nom_materiau', 'nom', 'name', 'name_fr', 'designation', 'libelle'],
-  trade: ['categorie', 'category', 'trade', 'trade_code', 'categorie_metier', 'metier'],
-  price: ['prix_tnd_ht', 'prix_ht_tnd', 'prix_tnd', 'prix_ht', 'prix', 'price', 'price_tnd', 'unit_price'],
-  unit: ['unite', 'unit', 'unite_mesure', 'base_unit'],
-  note: ['note_technique', 'note', 'notes', 'technical_specs', 'specs'],
-  nameAr: ['nom_arabe', 'name_ar', 'arabe'],
-};
-const IMPORT_CSV_REQUIRED_COLUMNS = ['reference', 'nameFr', 'trade', 'price'];
-
-/** Normalize a header cell: strip accents, lowercase, collapse spaces. */
-function normalizeCsvHeader(header: string): string {
-  return header
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .trim()
-    .replace(/\s+/g, '_');
+interface ExtractedUpload {
+  buffer: Buffer;
+  fileName: string;
+  fileType: 'csv' | 'xlsx';
+  countryCode: string;
+  currencyCode: string;
 }
 
-/** Accepts "31,5" / "31.5" / "1 500,25" — returns null when not numeric. */
-function parseImportPrice(raw: string): number | null {
-  const cleaned = raw.trim().replace(/\s/g, '').replace(/,/g, '.');
-  if (cleaned === '') return null;
-  const value = Number(cleaned);
-  return Number.isFinite(value) ? value : null;
+interface ParsedImportFile {
+  fileType: 'csv' | 'xlsx';
+  sheetName?: string;
+  headerRowNumber?: number;
+  headers: string[];
+  rows: Array<Record<string, string>>;
+}
+
+/**
+ * Extract + validate the uploaded file from a multipart form or a raw body.
+ * Keeps every Phase A protection: upload size limit, allowed MIME types,
+ * extension whitelist. When `csvOnly` is set (Phase A endpoint) only .csv is
+ * accepted, with the exact Phase A error messages.
+ */
+function extractImportUpload(
+  req: AuthenticatedRequest,
+  opts: { csvOnly: boolean }
+): ExtractedUpload {
+  const contentType = String(req.headers['content-type'] || '');
+  const isMultipart = contentType.toLowerCase().startsWith('multipart/form-data');
+
+  let fileRaw: Buffer | null = null;
+  let fileName = 'import.csv';
+  let formCountryCode: string | undefined;
+  let formCurrencyCode: string | undefined;
+
+  if (isMultipart) {
+    const boundary = getBoundary(contentType);
+    if (!boundary) throw badRequest('Missing multipart boundary');
+    const fields = parseMultipart(req.body as Buffer, boundary);
+    const file = fields.find((f): f is MultipartFile => 'buffer' in f && !!(f as MultipartFile).buffer);
+    if (!file) throw badRequest('No CSV file uploaded. Provide a file part named "file".');
+    // Same upload validation rules as the existing upload middleware.
+    if (file.size > config.maxUploadBytes) {
+      throw payloadTooLarge(`File too large. Max size: ${config.maxUploadBytes} bytes`);
+    }
+    if (!isValidFileType(file.filename, file.contentType, config.allowedUploadMime)) {
+      throw unsupportedMediaType(`File type not allowed: ${file.filename}`);
+    }
+    const lowerName = (file.filename || '').toLowerCase();
+    if (opts.csvOnly && !lowerName.endsWith('.csv')) {
+      throw unsupportedMediaType(`Only .csv files are supported in Phase A (no Excel yet). Got: ${file.filename || 'unnamed'}`);
+    }
+    if (!opts.csvOnly && !lowerName.endsWith('.csv') && !lowerName.endsWith('.xlsx')) {
+      throw unsupportedMediaType(`Only .csv and .xlsx files are supported. Got: ${file.filename || 'unnamed'}`);
+    }
+    if (lowerName.endsWith('.xls')) {
+      // Legacy binary Excel format — deliberately unsupported (BIFF is not a
+      // safe OOXML zip; it is NOT parsed by utils/xlsx).
+      throw unsupportedMediaType(`Legacy .xls is not supported. Re-save the file as .xlsx. Got: ${file.filename}`);
+    }
+    fileRaw = file.buffer;
+    fileName = file.filename || 'import.csv';
+    for (const f of fields) {
+      if ('buffer' in f) continue;
+      if (f.name === 'countryCode') formCountryCode = f.value;
+      if (f.name === 'currencyCode') formCurrencyCode = f.value;
+    }
+  } else if (Buffer.isBuffer(req.body) && (req.body as Buffer).length > 0) {
+    const isCsv = contentType.toLowerCase().includes('csv');
+    const isXlsx = contentType.toLowerCase().includes('spreadsheetml') || contentType.toLowerCase().includes('octet-stream');
+    if (opts.csvOnly && !isCsv) {
+      throw unsupportedMediaType(`Unsupported media type: ${contentType || 'none'}. Use multipart/form-data or text/csv.`);
+    }
+    if (!opts.csvOnly && !isCsv && !isXlsx) {
+      throw unsupportedMediaType(`Unsupported media type: ${contentType || 'none'}. Use multipart/form-data, text/csv or the .xlsx MIME type.`);
+    }
+    fileRaw = req.body as Buffer;
+    fileName = isCsv ? 'import.csv' : 'import.xlsx';
+  }
+
+  if (!fileRaw || fileRaw.length === 0) {
+    throw badRequest('No CSV file uploaded. Provide a multipart file part named "file" or a raw text/csv body.');
+  }
+
+  // ── One market + one currency for the WHOLE file (TN/TND home default) ───
+  const countryCode = (formCountryCode || (req.query.countryCode as string | undefined) || 'TN').trim().toUpperCase();
+  const currencyCode = (formCurrencyCode || (req.query.currencyCode as string | undefined) || 'TND').trim().toUpperCase();
+  if (!/^[A-Z]{2,3}$/.test(countryCode)) throw badRequest(`Invalid countryCode: '${countryCode}'`);
+  if (!/^[A-Z]{3}$/.test(currencyCode)) throw badRequest(`Invalid currencyCode: '${currencyCode}'`);
+
+  return {
+    buffer: fileRaw,
+    fileName,
+    fileType: fileName.toLowerCase().endsWith('.xlsx') ? 'xlsx' : 'csv',
+    countryCode,
+    currencyCode,
+  };
+}
+
+/**
+ * Parse an extracted upload into raw rows keyed by RAW header text.
+ * CSV uses the shared parser (headers = first line, Phase A behaviour);
+ * XLSX uses the safe ExcelJS reader (headers detected in the first rows).
+ */
+async function parseImportFile(upload: ExtractedUpload): Promise<ParsedImportFile> {
+  if (upload.fileType === 'xlsx') {
+    // parseXlsxToRows never throws; structural problems come back as { ok: false }.
+    const parsed = await parseXlsxToRows(upload.buffer);
+    if ('error' in parsed) throw badRequest(parsed.error);
+    return {
+      fileType: 'xlsx',
+      sheetName: parsed.sheetName,
+      headerRowNumber: parsed.headerRowNumber,
+      headers: parsed.headers,
+      rows: parsed.rows,
+    };
+  }
+  const csvContent = upload.buffer.toString('utf8').replace(/^\uFEFF/, '');
+  const rows = parseCsv(csvContent);
+  if (rows.length === 0) throw badRequest('CSV file is empty or has no header row.');
+  return {
+    fileType: 'csv',
+    headers: Object.keys(rows[0]),
+    rows,
+  };
+}
+
+/** Read the optional Smart-Mapping override (multipart field or ?mapping= query). */
+function extractMappingOverride(req: AuthenticatedRequest): Record<string, string> | undefined {
+  let raw: string | undefined;
+  const contentType = String(req.headers['content-type'] || '');
+  if (contentType.toLowerCase().startsWith('multipart/form-data')) {
+    const boundary = getBoundary(contentType);
+    if (boundary) {
+      const fields = parseMultipart(req.body as Buffer, boundary);
+      const field = fields.find((f) => f.name === 'mapping' && !('buffer' in f));
+      if (field) raw = field.value;
+    }
+  }
+  if (!raw) {
+    const q = req.query.mapping;
+    if (typeof q === 'string' && q !== '') raw = q;
+  }
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const mapping: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed)) mapping[k] = String(v);
+      return mapping;
+    }
+    throw new Error('not an object');
+  } catch {
+    throw badRequest("Invalid 'mapping' payload: expected a JSON object of { canonicalField: sourceColumn }.");
+  }
+}
+
+// ── Shared pipeline runner (parse → smart mapping → validate) ────────────────
+// NO database write happens here. Used by the Phase A CSV import, the
+// Phase C preview and the Phase C import.
+
+interface PipelineRun {
+  upload: ExtractedUpload;
+  parsed: ParsedImportFile;
+  mapping: ReturnType<typeof resolveMapping>;
+  valid: ValidImportRow[];
+  failed: FailedRow[];
+}
+
+async function runImportPipeline(
+  req: AuthenticatedRequest,
+  opts: { csvOnly: boolean; mappingOverride?: Record<string, string> }
+): Promise<PipelineRun> {
+  const upload = extractImportUpload(req, opts);
+  const parsed = await parseImportFile(upload);
+  const mapping = resolveMapping(parsed.headers, parsed.rows[0], opts.mappingOverride);
+  const { valid, failed } = normalizeAndValidateRows(parsed.rows, mapping.appliedMapping, {
+    countryCode: upload.countryCode,
+    currencyCode: upload.currencyCode,
+  });
+  return { upload, parsed, mapping, valid, failed };
+}
+
+/** All-or-nothing guard shared by /import-csv and /import. */
+function invalidRowsResponse(res: Response, run: PipelineRun) {
+  // Nothing has been written — validation ran before any database access,
+  // which IS the full-rollback guarantee for invalid files.
+  return res.status(400).json({
+    error: {
+      code: 'BAD_REQUEST',
+      message: `Import aborted: ${run.failed.length} invalid row(s). No data was written (all-or-nothing import).`,
+    },
+    data: {
+      fileName: run.upload.fileName,
+      totalRows: run.parsed.rows.length,
+      committed: false,
+      imported: 0,
+      updated: 0,
+      failed: run.failed,
+    },
+  });
 }
 
 router.post('/import-csv',
@@ -192,207 +378,212 @@ router.post('/import-csv',
   express.raw({ type: ['multipart/form-data', 'text/csv'], limit: '10mb' }),
   async (req: AuthenticatedRequest, res: Response, next: any) => {
     try {
-      const contentType = String(req.headers['content-type'] || '');
-      const isMultipart = contentType.toLowerCase().startsWith('multipart/form-data');
+      // ── 1) Extract, parse, smart-map and validate the file (CSV only —
+      //       the Phase A endpoint keeps its .csv-only contract).
+      const run = await runImportPipeline(req, { csvOnly: true });
 
-      // ── 1) Extract the CSV payload (multipart file part OR raw text/csv body)
-      let csvRaw: Buffer | null = null;
-      let fileName = 'import.csv';
-      let formCountryCode: string | undefined;
-      let formCurrencyCode: string | undefined;
-
-      if (isMultipart) {
-        const boundary = getBoundary(contentType);
-        if (!boundary) throw badRequest('Missing multipart boundary');
-        const fields = parseMultipart(req.body as Buffer, boundary);
-        const file = fields.find((f): f is MultipartFile => 'buffer' in f && !!(f as MultipartFile).buffer);
-        if (!file) throw badRequest('No CSV file uploaded. Provide a file part named "file".');
-        // Same upload validation rules as the existing upload middleware.
-        if (file.size > config.maxUploadBytes) {
-          throw payloadTooLarge(`File too large. Max size: ${config.maxUploadBytes} bytes`);
-        }
-        if (!isValidFileType(file.filename, file.contentType, config.allowedUploadMime)) {
-          throw unsupportedMediaType(`File type not allowed: ${file.filename}`);
-        }
-        if (!file.filename || !file.filename.toLowerCase().endsWith('.csv')) {
-          throw unsupportedMediaType(`Only .csv files are supported in Phase A (no Excel yet). Got: ${file.filename || 'unnamed'}`);
-        }
-        csvRaw = file.buffer;
-        fileName = file.filename;
-        for (const f of fields) {
-          if ('buffer' in f) continue;
-          if (f.name === 'countryCode') formCountryCode = f.value;
-          if (f.name === 'currencyCode') formCurrencyCode = f.value;
-        }
-      } else if (Buffer.isBuffer(req.body) && (req.body as Buffer).length > 0) {
-        if (!contentType.toLowerCase().includes('csv')) {
-          throw unsupportedMediaType(`Unsupported media type: ${contentType || 'none'}. Use multipart/form-data or text/csv.`);
-        }
-        csvRaw = req.body as Buffer;
-      }
-
-      if (!csvRaw || csvRaw.length === 0) {
-        throw badRequest('No CSV file uploaded. Provide a multipart file part named "file" or a raw text/csv body.');
-      }
-
-      // ── 2) One market + one currency for the WHOLE file (TN/TND home default)
-      const importCountry = (formCountryCode || (req.query.countryCode as string | undefined) || 'TN').trim().toUpperCase();
-      const importCurrency = (formCurrencyCode || (req.query.currencyCode as string | undefined) || 'TND').trim().toUpperCase();
-      if (!/^[A-Z]{2,3}$/.test(importCountry)) throw badRequest(`Invalid countryCode: '${importCountry}'`);
-      if (!/^[A-Z]{3}$/.test(importCurrency)) throw badRequest(`Invalid currencyCode: '${importCurrency}'`);
-
-      // ── 3) Parse with the SHARED parser (; , or tab — quoted fields supported)
-      const csvContent = csvRaw.toString('utf8').replace(/^\uFEFF/, '');
-      const rows = parseCsv(csvContent);
-      if (rows.length === 0) throw badRequest('CSV file is empty or has no header row.');
-
-      // Map the file's headers onto the canonical import columns.
-      const headerMap: Record<string, string> = {};
-      for (const header of Object.keys(rows[0])) {
-        const normalized = normalizeCsvHeader(header);
-        for (const [canonical, aliases] of Object.entries(IMPORT_CSV_COLUMNS)) {
-          if (aliases.includes(normalized)) { headerMap[canonical] = header; break; }
-        }
-      }
-      const missingColumns = IMPORT_CSV_REQUIRED_COLUMNS.filter((c) => !headerMap[c]);
-      if (missingColumns.length > 0) {
+      // Required columns must be resolvable from the file headers.
+      if (run.mapping.unmappedRequired.length > 0) {
         throw badRequest(
-          `CSV header is missing required column(s): ${missingColumns.join(', ')}. ` +
+          `CSV header is missing required column(s): ${run.mapping.unmappedRequired.join(', ')}. ` +
           'Expected headers: Reference;Nom_Materiau;Categorie;Unite;Prix_TND_HT;Note_Technique;Nom_Arabe'
         );
       }
-      if (rows.length > IMPORT_CSV_MAX_ROWS) {
-        throw badRequest(`Too many rows (${rows.length}). Maximum ${IMPORT_CSV_MAX_ROWS} rows per import.`);
+      if (run.parsed.rows.length > IMPORT_MAX_ROWS) {
+        throw badRequest(`Too many rows (${run.parsed.rows.length}). Maximum ${IMPORT_MAX_ROWS} rows per import.`);
       }
 
-      // ── 4) Validate EVERY row BEFORE touching the database (all-or-nothing)
-      const failed: Array<{ row: number; reference: string; reason: string }> = [];
-      const valid: Array<{ row: number; reference: string; nameFr: string; trade: string; price: number; unit: string; nameAr?: string; note?: string }> = [];
+      // ── 2) Validate EVERY row BEFORE touching the database (all-or-nothing)
+      if (run.failed.length > 0) { return invalidRowsResponse(res, run); }
 
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        const rowNumber = i + 2; // 1-based data rows, +1 for the header line
-        const reference = String(row[headerMap.reference] ?? '').trim();
-        const nameFr = String(row[headerMap.nameFr] ?? '').trim();
-        const tradeRaw = String(row[headerMap.trade] ?? '').trim();
-        const priceRaw = String(row[headerMap.price] ?? '').trim();
-        const unitRaw = headerMap.unit ? String(row[headerMap.unit] ?? '').trim() : '';
-        const nameAr = headerMap.nameAr ? String(row[headerMap.nameAr] ?? '').trim() : '';
-        const note = headerMap.note ? String(row[headerMap.note] ?? '').trim() : '';
-        const fail = (reason: string) => failed.push({ row: rowNumber, reference, reason });
-
-        if (!reference) { fail('Missing Reference (stable material code).'); continue; }
-        if (reference.length > 100) { fail(`Reference too long (${reference.length} > 100 characters).`); continue; }
-        if (!nameFr) { fail('Missing Nom_Materiau (material name).'); continue; }
-        const trade = tradeRaw.toLowerCase();
-        if (!trade) { fail('Missing Categorie (trade).'); continue; }
-        const price = parseImportPrice(priceRaw);
-        if (price === null) { fail(`Invalid price '${priceRaw}'.`); continue; }
-        if (price < 0) { fail(`Price must be >= 0 (got ${price}).`); continue; }
-        const unit = unitRaw || 'unit';
-        if (unit.length > 20) { fail(`Unit too long (${unit.length} > 20 characters).`); continue; }
-
-        valid.push({ row: rowNumber, reference, nameFr, trade, price, unit, nameAr: nameAr || undefined, note: note || undefined });
-      }
-
-      if (failed.length > 0) {
-        // Nothing has been written — validation ran before any database access,
-        // which IS the full-rollback guarantee for invalid files.
-        return res.status(400).json({
-          error: {
-            code: 'BAD_REQUEST',
-            message: `Import aborted: ${failed.length} invalid row(s). No data was written (all-or-nothing import).`,
-          },
-          data: { fileName, totalRows: rows.length, committed: false, imported: 0, updated: 0, failed },
-        });
-      }
-
-      // ── 5) Ensure all trades exist (Phase B — dynamic trade creation)
-      // Collect unique trade codes from the valid rows and create any that
-      // don't already exist. This makes newly imported trades immediately
-      // available in the trade selection UI without a hardcoded entry.
-      const uniqueTrades = [...new Set(valid.map((item) => item.trade))];
-      for (const tradeCode of uniqueTrades) {
-        try {
-          await upsertTradeByCode(tradeCode);
-        } catch (tradeErr: any) {
-          // If trade creation fails, abort the import with a clear error.
-          return res.status(500).json({
-            error: {
-              code: 'INTERNAL_ERROR',
-              message: `Failed to create trade '${tradeCode}': ${tradeErr?.message || tradeErr}`,
-            },
-            data: { fileName, totalRows: rows.length, committed: false, imported: 0, updated: 0, failed: [] },
-          });
-        }
-      }
-
-      // ── 6) ONE transaction: every material/price write commits or rolls back
-      const db = await getDatabase();
-      if (!db) { next(internalError('Database not available')); return; }
-
-      const results: Array<{ row: number; reference: string; status: 'imported' | 'updated' }> = [];
-      let imported = 0;
-      let updated = 0;
-
-      try {
-        await db.transaction(async (tx: any) => {
-          for (const item of valid) {
-            const existing = await findOfficialMaterialByCode(item.reference, tx);
-            await upsertMaterialByCode({
-              code: item.reference,
-              trade: item.trade,
-              category: item.trade,
-              nameFr: item.nameFr,
-              nameAr: item.nameAr ?? null,
-              nameDerja: null,
-              baseUnit: item.unit,
-              technicalSpecs: item.note ?? null,
-            }, tx);
-            await upsertOfficialPrice({
-              materialCode: item.reference,
-              price: roundMoney(item.price),
-              currencyCode: importCurrency,
-              countryCode: importCountry,
-            }, tx);
-            if (existing) {
-              updated++;
-              results.push({ row: item.row, reference: item.reference, status: 'updated' });
-            } else {
-              imported++;
-              results.push({ row: item.row, reference: item.reference, status: 'imported' });
-            }
-          }
-        });
-      } catch (txErr: any) {
-        // Drizzle already rolled the transaction back — nothing persisted.
+      // ── 3) Commit: dynamic trades (Phase B) + ONE transaction (materials +
+      //       official prices). Any database failure rolls the WHOLE batch back.
+      const commit = await commitValidRows(run.valid, {
+        countryCode: run.upload.countryCode,
+        currencyCode: run.upload.currencyCode,
+      });
+      // `in` narrowing (the project compiles without strictNullChecks).
+      if ('message' in commit) {
         return res.status(500).json({
-          error: {
-            code: 'INTERNAL_ERROR',
-            message: `Import failed and was fully rolled back: ${txErr?.message || txErr}`,
-          },
+          error: { code: 'INTERNAL_ERROR', message: commit.message },
           data: {
-            fileName,
-            totalRows: rows.length,
+            fileName: run.upload.fileName,
+            totalRows: run.parsed.rows.length,
             committed: false,
             imported: 0,
             updated: 0,
-            failed: valid.map((item) => ({ row: item.row, reference: item.reference, reason: 'Rolled back: database error during the transaction.' })),
+            failed: commit.failedRows,
           },
         });
       }
 
       return res.status(200).json({
         data: {
-          fileName,
-          totalRows: rows.length,
+          fileName: run.upload.fileName,
+          totalRows: run.parsed.rows.length,
           committed: true,
-          imported,
-          updated,
+          imported: commit.imported,
+          updated: commit.updated,
           failed: [],
-          results,
-          countryCode: importCountry,
-          currencyCode: importCurrency,
+          results: commit.results,
+          countryCode: run.upload.countryCode,
+          currencyCode: run.upload.currencyCode,
+        },
+      });
+    } catch (err) { next(err); }
+  }
+);
+
+// ── Phase C — Smart Mapping preview (NO database write) ─────────────────────
+// POST /catalog/preview
+//
+// Accepts .csv or .xlsx (multipart "file" part, optional "mapping" field with
+// a JSON object { canonicalField: sourceColumn }) and returns the full
+// mapping/preview/validation report WITHOUT touching the database:
+//   { detectedColumns, suggestedMapping, appliedMapping, unmappedRequired,
+//     totalRows, sampleRows, validCount, rejectedCount, rejected, canImport }
+router.post('/preview',
+  authenticate,
+  requireEntitlement('CATALOG_OFFICIAL_MANAGE'),
+  express.raw({ type: IMPORT_RAW_TYPES, limit: '10mb' }),
+  async (req: AuthenticatedRequest, res: Response, next: any) => {
+    try {
+      const mappingOverride = extractMappingOverride(req);
+      const run = await runImportPipeline(req, { csvOnly: false, mappingOverride });
+
+      if (run.mapping.mappingErrors.length > 0) {
+        throw badRequest(`Invalid mapping: ${run.mapping.mappingErrors.join('; ')}`);
+      }
+      if (run.parsed.rows.length > IMPORT_MAX_ROWS) {
+        throw badRequest(`Too many rows (${run.parsed.rows.length}). Maximum ${IMPORT_MAX_ROWS} rows per import.`);
+      }
+
+      // First 5 normalized rows in the canonical field shape (preview only).
+      const sampleRows = run.valid.slice(0, 5).map((item) => ({
+        row: item.row,
+        material_code: item.reference,
+        material_name: item.nameFr,
+        trade_code: item.trade,
+        ...(item.tradeLabel ? { trade_name: item.tradeLabel } : {}),
+        unit: item.unit,
+        price_ht: item.price,
+        ...(item.tvaRate !== undefined ? { tva_rate: item.tvaRate } : {}),
+        currency: run.upload.currencyCode,
+        market: run.upload.countryCode,
+        source: 'OFFICIAL_DEFAULT',
+      }));
+
+      return res.json({
+        data: {
+          fileName: run.upload.fileName,
+          fileType: run.upload.fileType,
+          sheetName: run.parsed.sheetName,
+          headerRowNumber: run.parsed.headerRowNumber,
+          // Canonical field registry (display metadata for the Admin UI).
+          fields: [
+            { key: 'material_code', label: 'Référence matériau (code stable)', required: true },
+            { key: 'material_name', label: 'Désignation matériau', required: true },
+            { key: 'trade_code', label: 'Métier (code)', required: true },
+            { key: 'price_ht', label: 'Prix HT', required: true },
+            { key: 'trade_name', label: 'Métier (libellé)', required: false },
+            { key: 'unit', label: 'Unité', required: false },
+            { key: 'tva_rate', label: 'Taux TVA', required: false },
+            { key: 'currency', label: 'Devise', required: false },
+            { key: 'market', label: 'Marché (pays)', required: false },
+            { key: 'name_ar', label: 'Nom (AR)', required: false },
+            { key: 'note', label: 'Note technique', required: false },
+          ],
+          detectedColumns: run.mapping.detectedColumns,
+          suggestedMapping: run.mapping.suggestedMapping,
+          appliedMapping: run.mapping.appliedMapping,
+          mappingErrors: run.mapping.mappingErrors,
+          unmappedRequired: run.mapping.unmappedRequired,
+          totalRows: run.parsed.rows.length,
+          sampleRows,
+          validCount: run.valid.length,
+          rowsToImport: run.valid.length,
+          rejectedCount: run.failed.length,
+          rejected: run.failed.slice(0, 50),
+          canImport:
+            run.mapping.unmappedRequired.length === 0 &&
+            run.mapping.mappingErrors.length === 0 &&
+            run.failed.length === 0 &&
+            run.parsed.rows.length > 0,
+          countryCode: run.upload.countryCode,
+          currencyCode: run.upload.currencyCode,
+          source: 'OFFICIAL_DEFAULT',
+        },
+      });
+    } catch (err) { next(err); }
+  }
+);
+
+// ── Phase C — Smart Mapping import (CSV + XLSX, transactional) ──────────────
+// POST /catalog/import
+//
+// Same pipeline as /preview, but commits through the EXISTING Phase A
+// transactional mechanism (dynamic trades + ONE transaction). Import is
+// REFUSED (400, nothing written) until every required field is mapped and
+// every row validates.
+router.post('/import',
+  authenticate,
+  requireEntitlement('CATALOG_OFFICIAL_MANAGE'),
+  express.raw({ type: IMPORT_RAW_TYPES, limit: '10mb' }),
+  async (req: AuthenticatedRequest, res: Response, next: any) => {
+    try {
+      const mappingOverride = extractMappingOverride(req);
+      const run = await runImportPipeline(req, { csvOnly: false, mappingOverride });
+
+      if (run.mapping.mappingErrors.length > 0) {
+        throw badRequest(`Invalid mapping: ${run.mapping.mappingErrors.join('; ')}`);
+      }
+      // Import is blocked until all required fields are mapped.
+      if (run.mapping.unmappedRequired.length > 0) {
+        throw badRequest(
+          `Import blocked: required field(s) not mapped: ${run.mapping.unmappedRequired.join(', ')}. ` +
+          'Map every required field in the Smart Mapping step before importing.'
+        );
+      }
+      if (run.parsed.rows.length > IMPORT_MAX_ROWS) {
+        throw badRequest(`Too many rows (${run.parsed.rows.length}). Maximum ${IMPORT_MAX_ROWS} rows per import.`);
+      }
+      if (run.parsed.rows.length === 0) {
+        throw badRequest('The file contains no data rows to import.');
+      }
+      if (run.failed.length > 0) { return invalidRowsResponse(res, run); }
+
+      const commit = await commitValidRows(run.valid, {
+        countryCode: run.upload.countryCode,
+        currencyCode: run.upload.currencyCode,
+      });
+      // `in` narrowing (the project compiles without strictNullChecks).
+      if ('message' in commit) {
+        return res.status(500).json({
+          error: { code: 'INTERNAL_ERROR', message: commit.message },
+          data: {
+            fileName: run.upload.fileName,
+            totalRows: run.parsed.rows.length,
+            committed: false,
+            imported: 0,
+            updated: 0,
+            failed: commit.failedRows,
+          },
+        });
+      }
+
+      return res.status(200).json({
+        data: {
+          fileName: run.upload.fileName,
+          fileType: run.upload.fileType,
+          totalRows: run.parsed.rows.length,
+          committed: true,
+          imported: commit.imported,
+          updated: commit.updated,
+          failed: [],
+          results: commit.results,
+          countryCode: run.upload.countryCode,
+          currencyCode: run.upload.currencyCode,
+          mapping: run.mapping.appliedMapping,
         },
       });
     } catch (err) { next(err); }

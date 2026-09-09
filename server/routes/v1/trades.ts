@@ -11,6 +11,7 @@
  */
 import { Router, Response } from 'express';
 import { tradeRepository } from '../../repositories/tradeRepository';
+import { listServicesByTradeId } from '../../repositories/drizzleTradeServiceRepository';
 import { optionalAuth } from '../../middleware/auth';
 import { notFound } from '../../utils/errors';
 
@@ -35,6 +36,18 @@ router.get('/:id', async (req, res, next) => {
     const trade = await tradeRepository.findById(req.params.id);
     if (!trade) throw notFound(`Trade '${req.params.id}' not found`);
     res.json({ data: trade });
+  } catch (err) { next(err); }
+});
+
+// ── GET /:id/services ──────────────────────────────────────────────────────
+// Phase D — data-driven services for a trade. Returns services from the
+// trade_services table so dynamic trades can have meaningful services
+// without any source code change.
+
+router.get('/:id/services', async (req, res, next) => {
+  try {
+    const services = await listServicesByTradeId(req.params.id);
+    res.json({ data: services });
   } catch (err) { next(err); }
 });
 

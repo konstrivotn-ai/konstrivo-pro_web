@@ -30,7 +30,7 @@ import {
 } from './types';
 import { DEFAULT_MARKET_RATES } from './data/marketRates';
 import { restoreSession, logout, listDevis, createDevis, updateDevis, deleteDevis, listPrices } from './lib/api';
-import { buildPriceMap, mergeRates } from './utils/priceLookup';
+import { buildPriceMapWithTrade, mergeRates } from './utils/priceLookup';
 import {
   normalizeDevisFromServer, toServerDevisPayload, makeDevisReference,
   isDefaultCompanyName,
@@ -315,7 +315,9 @@ export default function App() {
 
         // Step 5 — build the price map keyed by LEGACY slug (materials.code),
         // falling back to materialId so the same path also works in-memory.
-        const priceMap = buildPriceMap(serverPrices);
+        // Phase D — use buildPriceMapWithTrade to preserve the authoritative
+        // trade relationship for dynamic-trade material resolution.
+        const priceMap = buildPriceMapWithTrade(serverPrices);
 
         // Step 3 — SERVER PRICE PRIORITY merge (fallback preserved):
         //   Tier 1: a valid server price for a legacy slug ALWAYS wins over the

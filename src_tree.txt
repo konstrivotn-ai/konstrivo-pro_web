@@ -1,9 +1,0 @@
-﻿C:\Users\Admin\Desktop\konstrivo web apm\KONSTRIVO_WEBSITE_BACKUP_BEFORE_PHASE1\src\types.ts
-C:\Users\Admin\Desktop\konstrivo web apm\KONSTRIVO_WEBSITE_BACKUP_BEFORE_PHASE1\src\data\countryConfig.ts
-C:\Users\Admin\Desktop\konstrivo web apm\KONSTRIVO_WEBSITE_BACKUP_BEFORE_PHASE1\src\data\knowledgeBase.ts
-C:\Users\Admin\Desktop\konstrivo web apm\KONSTRIVO_WEBSITE_BACKUP_BEFORE_PHASE1\src\data\marketRates.ts
-C:\Users\Admin\Desktop\konstrivo web apm\KONSTRIVO_WEBSITE_BACKUP_BEFORE_PHASE1\src\data\mockSaaSData.ts
-C:\Users\Admin\Desktop\konstrivo web apm\KONSTRIVO_WEBSITE_BACKUP_BEFORE_PHASE1\src\lib\api.ts
-C:\Users\Admin\Desktop\konstrivo web apm\KONSTRIVO_WEBSITE_BACKUP_BEFORE_PHASE1\src\utils\auditEngine.ts
-C:\Users\Admin\Desktop\konstrivo web apm\KONSTRIVO_WEBSITE_BACKUP_BEFORE_PHASE1\src\utils\calculations.ts
-C:\Users\Admin\Desktop\konstrivo web apm\KONSTRIVO_WEBSITE_BACKUP_BEFORE_PHASE1\src\utils\whatsapp.ts

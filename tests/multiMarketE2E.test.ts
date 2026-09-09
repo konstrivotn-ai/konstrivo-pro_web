@@ -34,7 +34,7 @@
  */
 import { strict as assert } from 'node:assert';
 import { buildSupplierCsvPendingPlan } from '../server/priceSources/supplierCsv';
-import { buildPriceMap, mergeRates } from '../src/utils/priceLookup';
+import { buildPriceMapWithTrade, mergeRates } from '../src/utils/priceLookup';
 
 let passed = 0, failed = 0;
 const failures: string[] = [];
@@ -172,7 +172,7 @@ import { MaterialRate } from '../src/types';
 const LOCAL_RATES: MaterialRate[] = [{ id: CODE, category: 'placo', nameFr: 'Plaque de plâtre BA13',
   nameAr: '', nameDerja: '', unit: 'unit', unitPriceTnd: 28, defaultPriceTnd: 28 }];
 // Mirrors App.tsx: priceMap = buildPriceMap(await listPrices({ market: country.toLowerCase() }))
-const syncRates = (market: string, prev = LOCAL_RATES) => mergeRates(prev, buildPriceMap(listPrices(market)));
+const syncRates = (market: string, prev = LOCAL_RATES) => mergeRates(prev, buildPriceMapWithTrade(listPrices(market)));
 // Mirrors src/utils/calculations.ts: getPrice = (id) => rates.find(r => r.id === id)?.unitPriceTnd || 0
 const getPrice = (rates: Array<{ id: string; unitPriceTnd: number }>, id: string) =>
   rates.find(r => r.id === id)?.unitPriceTnd || 0;
