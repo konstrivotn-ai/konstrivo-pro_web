@@ -659,7 +659,7 @@ export default function App() {
               onUpdateRate={handleUpdateRate}
               onBulkUpdateRates={handleBulkUpdateRates}
               onResetRates={handleResetRates}
-              onOpenCatalogUpload={() => setShowSupplierModal(true)}
+              onOpenCatalogUpload={() => setShowCatalogModal(true)}
               lang={lang}
               country={country}
               currency={currency}
