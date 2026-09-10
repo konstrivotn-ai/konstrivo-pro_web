@@ -98,14 +98,8 @@ export function createAiEstimatorHandler(aiClient?: any) {
   };
 }
 
-async function startServer() {
-  // ── TEMP DIAGNOSTIC (prints ONLY booleans / non-secrets; never env values) ──
-  console.log(
-    `[KONSTRIVO][DIAG] RESEND_API_KEY=${Boolean(process.env.RESEND_API_KEY)} EMAIL_FROM=${Boolean(process.env.EMAIL_FROM)} NODE_ENV=${process.env.NODE_ENV}`
-  );
-
+export async function createApp() {
   const app = express();
-  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   // ── Phase 2 API: /api/v1 (mounted BEFORE Vite/SPA middleware) ──────────
   // Apply security headers first
@@ -143,12 +137,30 @@ async function startServer() {
     });
   }
 
+  return app;
+}
+
+async function startServer() {
+  // ── TEMP DIAGNOSTIC (prints ONLY booleans / non-secrets; never env values) ──
+  console.log(
+    `[KONSTRIVO][DIAG] RESEND_API_KEY=${Boolean(process.env.RESEND_API_KEY)} EMAIL_FROM=${Boolean(process.env.EMAIL_FROM)} NODE_ENV=${process.env.NODE_ENV}`
+  );
+
+  const app = await createApp();
+
   // Bootstrap admin user from environment variables
   await bootstrapAdmin();
 
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[KONSTRIVO] Server running on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer();
+// Start the server only when NOT running on Vercel (local / Render).
+// On Vercel, api/index.ts handles requests via serverless functions.
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+
