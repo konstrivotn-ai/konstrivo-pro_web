@@ -1,5 +1,5 @@
-import { createApp } from '../server';
-import { bootstrapAdmin } from '../server/bootstrap';
+import { createApp } from '../server.js';
+import { bootstrapAdmin } from '../server/bootstrap.js';
 
 // Cache the app across invocations (serverless warm reuse).
 let cachedApp: any = null;
