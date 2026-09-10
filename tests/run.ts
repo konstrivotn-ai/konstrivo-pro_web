@@ -40,6 +40,11 @@ export function ok(value: any, message?: string) {
   assertOk(value, message);
 }
 
+/** Returns the cumulative test counters (used by focused runners like runPhaseC). */
+export function testResults(): { passed: number; failed: number; failures: string[] } {
+  return { passed, failed, failures: [...failures] };
+}
+
 // Shared test context
 export interface TestCtx {
   server: TestServer;
@@ -78,6 +83,7 @@ async function main() {
   const { runDevisTests } = await import('./devis.test');
   const { runSupplierTests } = await import('./suppliers.test');
   const { runCatalogImportCsvTests } = await import('./catalogImportCsv.test');
+  const { runCatalogImportPhaseCTests } = await import('./catalogImportPhaseC.test');
   const { runSyncTests } = await import('./sync.test');
   const { runDirectoryTests } = await import('./directory.test');
   const { runAiTests } = await import('./ai.test');
@@ -100,6 +106,7 @@ async function main() {
   await runDevisTests();
   await runSupplierTests();
   await runCatalogImportCsvTests();
+  await runCatalogImportPhaseCTests();
   await runSyncTests();
   await runDirectoryTests();
   await runRateLimitTests();
@@ -121,7 +128,18 @@ async function main() {
   process.exit(failed > 0 ? 1 : 0);
 }
 
-main().catch(err => {
-  console.error('[KONSTRIVO] Test runner crashed:', err);
-  process.exit(1);
-});
+// ── Auto-run ONLY when executed directly ─────────────────────────────────────
+// `tsx tests/run.ts` (argv[1] ends with tests/run.ts) runs the full suite.
+// Importing this module from a focused runner (e.g. tests/runPhaseC.ts) must
+// NOT auto-start a second full suite — it only reuses the shared harness
+// (test/assertEq/ok/ctx/testResults).
+const __mainEntry = (process.argv[1] || '').replace(/\\/g, '/').toLowerCase();
+const __isDirectRun =
+  __mainEntry.endsWith('tests/run.ts') || __mainEntry.endsWith('/run.ts') || __mainEntry === 'run.ts';
+
+if (__isDirectRun) {
+  main().catch(err => {
+    console.error('[KONSTRIVO] Test runner crashed:', err);
+    process.exit(1);
+  });
+}

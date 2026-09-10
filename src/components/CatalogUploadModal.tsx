@@ -36,7 +36,7 @@ interface ParseTotals {
   errors: number;
 }
 
-interface ColumnMapping {
+export interface ColumnMapping {
   material_name?: string;
   material_code?: string;
   category?: string;
@@ -186,6 +186,88 @@ export function resolveMapping(headers: string[]): ColumnMapping {
   }
   return mapping;
 }
+// ── Smart Mapping UI: one canonical value space for appliedMapping / Selects ──
+// NOTE: there is NO "Métier (code)" row here — the local import flow's `trade`
+// field accepts trade labels (free text), so a plain `trade` column is
+// legitimately mapped to « Métier ». Nothing pretends to consume a trade code.
+export interface MappingFieldDef {
+  key: keyof ColumnMapping;
+  label: string;
+  required: boolean;
+}
+
+export const MAPPING_FIELDS: MappingFieldDef[] = [
+  { key: 'material_code', label: 'Référence matériau', required: false },
+  { key: 'material_name', label: 'Désignation matériau', required: true },
+  { key: 'category', label: 'Catégorie', required: false },
+  { key: 'trade', label: 'Métier', required: false },
+  { key: 'unit', label: 'Unité', required: true },
+  { key: 'price_ht', label: 'Prix HT', required: true },
+  { key: 'tva_rate', label: 'Taux TVA', required: false },
+  { key: 'currency', label: 'Devise', required: false },
+  { key: 'source', label: 'Source / Fournisseur', required: false },
+];
+
+export interface MappingOption {
+  value: string;
+  label: string;
+}
+
+/**
+ * Select options for the Smart Mapping UI. The option `value` is the EXACT
+ * header key used by the parsed row records — the SAME value space as the
+ * Select's `value` and the values stored in `appliedMapping` (one shared
+ * space, so a detected field can never wrongly display « — Non mappé — »).
+ */
+export function optionsForField(headers: string[]): MappingOption[] {
+  return headers.map((h) => ({ value: h, label: h }));
+}
+
+/**
+ * Convert any auto-detection value (raw CSV header, possibly BOM-prefixed,
+ * differently cased or spaced) into the exact header key present in the parsed
+ * row records. Returns '' when no column matches.
+ */
+export function canonicalHeaderKey(rawHeader: string, headers: string[]): string {
+  const raw = String(rawHeader ?? '');
+  if (raw === '') return '';
+  if (headers.includes(raw)) return raw;
+  const norm = normalizeHeader(raw).replace(/^_+|_+$/g, '');
+  if (norm === '') return '';
+  const exact = headers.find((h) => normalizeHeader(h) === norm);
+  if (exact) return exact;
+  const loose = norm.replace(/[^a-z0-9]+/g, '_');
+  const looseMatch = headers.find((h) => normalizeHeader(h).replace(/[^a-z0-9]+/g, '_') === loose);
+  return looseMatch ?? '';
+}
+
+/**
+ * Final applied mapping shown in the UI and used by buildParsedItems():
+ *   - manual user choices win and are NEVER overwritten by auto-detection
+ *     ('' = explicit un-mapping; an override pointing at a column that no
+ *     longer exists in the current file falls back to auto-detection),
+ *   - untouched fields use auto-detection, canonicalized to exact row keys,
+ *   - optional fields absent from the file stay '' (→ « — Non mappé — »).
+ */
+export function buildAppliedMapping(
+  headers: string[],
+  autoMapping: ColumnMapping,
+  userMapping: ColumnMapping
+): ColumnMapping {
+  const applied: ColumnMapping = {};
+  for (const field of MAPPING_FIELDS) {
+    const key = field.key;
+    const userValue = userMapping[key];
+    if (userValue !== undefined) {
+      if (userValue === '') { applied[key] = ''; continue; }
+      const canonical = canonicalHeaderKey(userValue, headers);
+      if (canonical !== '') { applied[key] = canonical; continue; }
+    }
+    const autoValue = autoMapping[key];
+    applied[key] = autoValue ? canonicalHeaderKey(autoValue, headers) : '';
+  }
+  return applied;
+}
 
 export function parseImportPrice(raw: string): number | null {
   const cleaned = String(raw ?? '').trim().replace(/\s/g, '').replace(/,/g, '.');
@@ -287,6 +369,169 @@ export function buildParsedItems(
   return { items, errors };
 }
 
+// ── Apply: existing rates updated + new articles appended (no duplicates) ────
+
+const UNIT_ALIAS_MAP: Record<string, MaterialRate['unit']> = (() => {
+  const map: Record<string, MaterialRate['unit']> = {};
+  const add = (unit: MaterialRate['unit'], aliases: string[]) => {
+    map[normalizeHeader(unit)] = unit;
+    for (const a of aliases) {
+      const key = normalizeHeader(a);
+      if (!(key in map)) map[key] = unit;
+    }
+  };
+  add('unit', ['u', 'pcs', 'piece', 'pieces', 'pce', 'each', 'unite_mesure', 'unite_vente']);
+  add('m²', ['m2', 'metre_carre', 'metre2', 'sqm', 'sq_m']);
+  add('m³', ['m3', 'metre_cube', 'metre3', 'cubic_meter']);
+  add('ml', ['mlg', 'metre_lineaire', 'linear_meter', 'lm']);
+  add('kg', ['kgs', 'kilogramme', 'kilogrammes', 'kilo', 'kilos']);
+  add('sac', ['sacs', 'bag', 'bags', 'sack']);
+  add('boite', ['boites', 'box', 'carton', 'paquet', 'boite_de_500']);
+  add('boite_1000', ['boite_de_1000', 'box_1000', 'boite_1000_pcs']);
+  add('rouleau', ['rouleaux', 'roll', 'rolls']);
+  add('tube', ['tubes', 'cartouche', 'cartouches']);
+  add('point', ['points', 'pt', 'pts']);
+  add('panneau', ['panneaux', 'panel', 'panels']);
+  add('mètre', ['metre', 'm', 'meter', 'meters', 'metres', 'longueur']);
+  return map;
+})();
+
+/** Safe imported-unit → allowed MaterialRate['unit'] mapping (no blind casts). */
+export function mapImportedUnit(raw: string): MaterialRate['unit'] {
+  const key = normalizeHeader(raw);
+  if (key === '') return 'unit';
+  return UNIT_ALIAS_MAP[key] ?? 'unit';
+}
+
+/** Deterministic, safe id slug (material_code when available, else name+category). */
+export function slugifyMaterialId(raw: string): string {
+  const base = normalizeHeader(raw)
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80);
+  return base !== '' ? base : 'article';
+}
+
+export interface ApplyCatalogResult {
+  updatedRates: MaterialRate[];
+  updatedCount: number;
+  addedCount: number;
+  duplicateSkipped: number;
+}
+
+/**
+ * Merge imported items into the rates base:
+ *   existing rates + updated imported matches + newly added imported materials.
+ * Matching order: (a) material_code ↔ existing id (slug-normalized, safe),
+ * (b) preview-matched rate id, (c) normalized name (+ category preference).
+ * One-to-one enforcement + signature dedup prevent duplicates — re-importing
+ * the same file is idempotent. Existing rates are never removed or replaced.
+ */
+export function applyParsedCatalog(
+  rates: MaterialRate[],
+  items: ParsedItem[],
+  opts: { supplierName?: string; importedOn?: Date } = {}
+): ApplyCatalogResult {
+  const dateLabel = (opts.importedOn ?? new Date()).toLocaleDateString('fr-TN');
+  const supplier = (opts.supplierName ?? '').trim() || 'catalogue fournisseur';
+  const updateNote = `Mis à jour via ${supplier} (${dateLabel})`;
+
+  const result: MaterialRate[] = rates.map((r) => ({ ...r }));
+  const used = new Set<number>(); // one-to-one: each existing rate updated at most once
+  const assignedIds = new Set<string>(rates.map((r) => r.id));
+  const seenSignatures = new Set<string>(); // duplicate rows inside the same file
+  let updatedCount = 0;
+  let addedCount = 0;
+  let duplicateSkipped = 0;
+
+  // Indexes for matching (built once; "used" re-checked at lookup time).
+  const idxBySlugId = new Map<string, number>(); // (a) slug(material_code) ↔ slug(existing id)
+  const idxById = new Map<string, number>();     // (b) preview-matched id
+  const idxByName = new Map<string, number[]>(); // (c) normalized nameFr
+  result.forEach((rate, idx) => {
+    const slug = slugifyMaterialId(rate.id);
+    if (!idxBySlugId.has(slug)) idxBySlugId.set(slug, idx);
+    if (!idxById.has(rate.id)) idxById.set(rate.id, idx);
+    const nameKey = normalizeHeader(rate.nameFr);
+    const bucket = idxByName.get(nameKey);
+    if (bucket) bucket.push(idx);
+    else idxByName.set(nameKey, [idx]);
+  });
+
+  for (const item of items) {
+    const codeSlug = item.materialCode ? slugifyMaterialId(item.materialCode) : '';
+    const nameKey = normalizeHeader(item.nameFr);
+    const signature = codeSlug !== '' ? `code:${codeSlug}` : `name:${nameKey}`;
+
+    // 0) Same material twice within one file → skip the extra row.
+    if (seenSignatures.has(signature)) { duplicateSkipped++; continue; }
+    seenSignatures.add(signature);
+
+    // (a) material_code ↔ existing id (safe slug comparison)
+    let target = -1;
+    if (codeSlug !== '') {
+      const bySlug = idxBySlugId.get(codeSlug);
+      if (bySlug !== undefined && !used.has(bySlug)) target = bySlug;
+    }
+    // (b) preview-matched rate id
+    if (target < 0 && item.matchedRateId) {
+      const byId = idxById.get(item.matchedRateId);
+      if (byId !== undefined && !used.has(byId)) target = byId;
+    }
+    // (c) normalized name, category preferred when both known
+    if (target < 0) {
+      const bucket = (idxByName.get(nameKey) ?? []).filter((i) => !used.has(i));
+      const withCategory = item.category
+        ? bucket.find((i) => result[i].category === item.category)
+        : undefined;
+      target = withCategory ?? bucket[0] ?? -1;
+    }
+    // Name known but its match(es) were already consumed this run → duplicate.
+    if (target < 0) {
+      const bucket = idxByName.get(nameKey) ?? [];
+      if (bucket.length > 0 && bucket.every((i) => used.has(i))) { duplicateSkipped++; continue; }
+    }
+
+    if (target >= 0) {
+      used.add(target);
+      result[target] = {
+        ...result[target],
+        unitPriceTnd: item.newPriceTnd,
+        note: updateNote
+      };
+      updatedCount++;
+      continue;
+    }
+
+    // Nouvel article → append a complete MaterialRate (existing rates untouched).
+    const category = (item.category || item.trade || '').trim() || 'import';
+    const unit = mapImportedUnit(item.unit);
+    let id = codeSlug !== '' ? codeSlug : slugifyMaterialId(`${item.nameFr}_${category}`);
+    if (assignedIds.has(id)) {
+      let n = 2;
+      while (assignedIds.has(`${id}_${n}`)) n++;
+      id = `${id}_${n}`;
+    }
+    assignedIds.add(id);
+    addedCount++;
+    const currencySuffix = item.currency && item.currency !== 'TND' ? ` — prix saisi en ${item.currency}` : '';
+    result.push({
+      id,
+      category,
+      nameFr: item.nameFr,
+      nameAr: item.nameFr,     // no translation column in the file → fallback to nameFr
+      nameDerja: item.nameFr,  // no translation column in the file → fallback to nameFr
+      unit,
+      unitPriceTnd: item.newPriceTnd,
+      defaultPriceTnd: item.newPriceTnd,
+      note: `Importé via ${supplier} (${dateLabel})${currencySuffix}`
+    });
+  }
+
+  return { updatedRates: result, updatedCount, addedCount, duplicateSkipped };
+}
+
 // ── Excel (.xlsx / .xls) → same row shape as CSV ─────────────────────────────
 async function parseExcelFile(file: File): Promise<Array<Record<string, string>>> {
   const XLSX = await import('xlsx');
@@ -351,6 +596,13 @@ export const CatalogUploadModal: React.FC<CatalogUploadModalProps> = ({
   const [parsedTotals, setParsedTotals] = useState<ParseTotals>({ totalRows: 0, valid: 0, errors: 0 });
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  // Smart Mapping state — parsedRows/parsedHeaders feed both the mapping
+  // Selects and buildParsedItems(); appliedMapping is THE mapping used
+  // everywhere (Selects values, options and the confirm/apply step).
+  const [parsedRows, setParsedRows] = useState<Array<Record<string, string>>>([]);
+  const [parsedHeaders, setParsedHeaders] = useState<string[]>([]);
+  const [appliedMapping, setAppliedMapping] = useState<ColumnMapping>({});
+  const [userMapping, setUserMapping] = useState<ColumnMapping>({});
 
   if (!isOpen) return null;
 
@@ -376,20 +628,16 @@ DAL-VINYL60,Dalle de plafond démontable vinyle 60x60cm,placo,unit,5.800,19,TND,
 
   const processRows = (rows: Array<Record<string, string>>) => {
     const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
-    const mapping = resolveMapping(headers);
+    const autoMapping = resolveMapping(headers);
+    // appliedMapping = auto-detection (canonicalized to exact row-record keys)
+    // merged with the user's manual choices, which are never overwritten.
+    const applied = buildAppliedMapping(headers, autoMapping, userMapping);
 
-    if (!mapping.price_ht) {
-      setParsedItems([]);
-      setRowErrors([]);
-      setParsedTotals({ totalRows: rows.length, valid: 0, errors: 0 });
-      setStatusMessage(
-        `Aucune colonne de prix reconnue dans le fichier (colonnes détectées : ${headers.join(', ') || 'aucune'}). ` +
-        `Ajoutez une colonne nommée price_ht, prix_ht, prix_ht_tnd, price, prix…`
-      );
-      return;
-    }
+    setParsedRows(rows);
+    setParsedHeaders(headers);
+    setAppliedMapping(applied);
 
-    const { items, errors } = buildParsedItems(rows, mapping, {
+    const { items, errors } = buildParsedItems(rows, applied, {
       taxMode,
       tvaRate,
       rates
@@ -399,13 +647,51 @@ DAL-VINYL60,Dalle de plafond démontable vinyle 60x60cm,placo,unit,5.800,19,TND,
     setRowErrors(errors);
     setParsedTotals({ totalRows: rows.length, valid: items.length, errors: errors.length });
 
-    if (items.length === 0 && errors.length > 0) {
-      setStatusMessage(`Fichier analysé : ${rows.length} ligne(s) lue(s), 0 article valide — consultez les erreurs ci-dessous.`);
-    } else if (errors.length > 0) {
-      setStatusMessage(`Catalogue analysé : ${items.length} article(s) valide(s), ${errors.length} ligne(s) rejetée(s).`);
-    } else {
-      setStatusMessage(`Catalogue analysé avec succès : ${items.length} article(s) identifié(s).`);
+    if (!applied.price_ht) {
+      setStatusMessage(
+        `Aucune colonne de prix reconnue automatiquement (colonnes détectées : ${headers.join(', ') || 'aucune'}). ` +
+        `Sélectionnez manuellement la colonne « Prix HT » dans le Smart Mapping ci-dessous (price_ht, prix_ht, prix_ht_tnd, price, prix…)`
+      );
+      return;
     }
+
+    if (items.length === 0 && errors.length > 0) {
+      setStatusMessage(`Fichier analysé : ${rows.length} ligne(s) lue(s), 0 ligne à importer — consultez les erreurs ci-dessous.`);
+    } else if (errors.length > 0) {
+      setStatusMessage(`Catalogue analysé : ${items.length} ligne(s) à importer · ${errors.length} ligne(s) rejetée(s).`);
+    } else {
+      setStatusMessage(`Catalogue analysé avec succès : ${items.length} ligne(s) à importer.`);
+    }
+  };
+
+  /** Re-run the exact pipeline (buildParsedItems) with a given applied mapping. */
+  const reparseWithMapping = (mapping: ColumnMapping) => {
+    if (parsedRows.length === 0) return;
+    const { items, errors } = buildParsedItems(parsedRows, mapping, {
+      taxMode,
+      tvaRate,
+      rates
+    });
+    setParsedItems(items);
+    setRowErrors(errors);
+    setParsedTotals({ totalRows: parsedRows.length, valid: items.length, errors: errors.length });
+    if (items.length === 0 && errors.length > 0) {
+      setStatusMessage(`Mapping appliqué : ${parsedRows.length} ligne(s) lue(s), 0 ligne à importer — consultez les erreurs ci-dessous.`);
+    } else if (errors.length > 0) {
+      setStatusMessage(`Mapping appliqué : ${items.length} ligne(s) à importer · ${errors.length} ligne(s) rejetée(s).`);
+    } else {
+      setStatusMessage(`Mapping appliqué : ${items.length} ligne(s) à importer.`);
+    }
+  };
+
+  /** Manual mapping change: user choice wins and is never auto-overwritten. */
+  const handleMappingChange = (fieldKey: keyof ColumnMapping, headerValue: string) => {
+    const nextUser: ColumnMapping = { ...userMapping };
+    nextUser[fieldKey] = headerValue; // '' = explicit un-mapping
+    setUserMapping(nextUser);
+    const applied = buildAppliedMapping(parsedHeaders, resolveMapping(parsedHeaders), nextUser);
+    setAppliedMapping(applied);
+    reparseWithMapping(applied);
   };
 
   const parseFileContent = (content: string) => {
@@ -457,27 +743,38 @@ DAL-VINYL60,Dalle de plafond démontable vinyle 60x60cm,placo,unit,5.800,19,TND,
   };
 
   const handleApply = () => {
-    if (parsedItems.length === 0) return;
+    if (parsedRows.length === 0) return;
 
-    let updatedCount = 0;
-    const updatedRates = rates.map(rate => {
-      const matched = parsedItems.find(p => p.matchedRateId === rate.id || p.nameFr.toLowerCase().includes(rate.nameFr.toLowerCase()));
-      if (matched) {
-        updatedCount++;
-        return {
-          ...rate,
-          unitPriceTnd: matched.newPriceTnd,
-          note: `Mis à jour via ${supplierName} (${new Date().toLocaleDateString('fr-TN')})`
-        };
-      }
-      return rate;
+    // Confirm parses with EXACTLY the mapping displayed in the Smart Mapping
+    // UI (appliedMapping) — never a stale or different mapping.
+    const { items } = buildParsedItems(parsedRows, appliedMapping, {
+      taxMode,
+      tvaRate,
+      rates
     });
+    if (items.length === 0) return;
+
+    // Existing rates + updated matches + newly added articles (no duplicates).
+    const { updatedRates, updatedCount, addedCount, duplicateSkipped } = applyParsedCatalog(
+      rates,
+      items,
+      { supplierName }
+    );
 
     onApplyCatalog(updatedRates);
-    setStatusMessage(`Base de calcul mise à jour avec ${updatedCount} articles synchronisés.`);
+
+    const parts: string[] = [];
+    if (updatedCount > 0) parts.push(`${updatedCount} article(s) existant(s) mis à jour`);
+    if (addedCount > 0) parts.push(`${addedCount} nouvel(s) article(s) ajouté(s)`);
+    if (duplicateSkipped > 0) parts.push(`${duplicateSkipped} doublon(s) ignoré(s)`);
+    setStatusMessage(
+      parts.length > 0
+        ? `Base de calcul mise à jour : ${parts.join(' · ')}.`
+        : 'Aucun changement appliqué.'
+    );
     setTimeout(() => {
       onClose();
-    }, 900);
+    }, addedCount > 0 ? 1400 : 900);
   };
 
   const handleLoadSampleNow = () => {
@@ -633,6 +930,45 @@ DAL-VINYL60,Dalle de plafond démontable vinyle 60x60cm,placo,unit,5.800,19,TND,
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
               )}
               <span>{statusMessage}</span>
+            </div>
+          )}
+
+          {/* Smart Mapping — visible column ↔ field mapping (single value space:
+              appliedMapping[key] === select value === option value === row key) */}
+          {parsedHeaders.length > 0 && (
+            <div className="space-y-2 bg-slate-950/60 border border-slate-800 rounded-xl p-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-200 flex items-center gap-2">
+                  <Layers className="w-4 h-4 text-amber-400" />
+                  Smart Mapping — Correspondance des colonnes
+                </h4>
+                <span className="text-[10px] text-slate-500">{parsedHeaders.length} colonne(s) détectée(s)</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                {MAPPING_FIELDS.map((field) => {
+                  const current = appliedMapping[field.key] ?? '';
+                  return (
+                    <div key={field.key} className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5">
+                      <span className={`text-[11px] font-bold w-40 shrink-0 ${field.required ? 'text-emerald-300' : 'text-slate-400'}`}>
+                        {field.label}{field.required ? ' *' : ''}
+                      </span>
+                      <select
+                        value={current}
+                        onChange={(e) => handleMappingChange(field.key, e.target.value)}
+                        className="flex-1 bg-slate-900 text-slate-100 text-[11px] font-mono border border-slate-700 rounded-lg px-1.5 py-1 outline-none cursor-pointer"
+                      >
+                        <option value="">— Non mappé —</option>
+                        {optionsForField(parsedHeaders).map((opt) => (
+                          <option key={opt.value} value={opt.value}>{opt.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-[10px] text-slate-500">
+                La correspondance détectée automatiquement est présélectionnée ; vos choix manuels sont conservés et utilisés tels quels lors de l'application.
+              </p>
             </div>
           )}
 

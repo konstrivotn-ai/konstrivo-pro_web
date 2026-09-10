@@ -12,6 +12,16 @@
  *   5. CSV without a price column → mapping must miss price_ht (the UI then
  *      shows the clear error; here we assert the mapping contract)
  *   6. Row validation reasons (missing name / unit, invalid price…)
+ *   7. applyParsedCatalog (handleApply core): existing materials updated,
+ *      new articles actually ADDED to updatedRates, no duplicates on
+ *      re-import or within one file, valid MaterialRate shape, safe unit
+ *      mapping into the allowed union, stable unique ids.
+ *  16. Smart Mapping UI contract (regression, 2026-09-10): ONE canonical
+ *      value space shared by appliedMapping / <select value> / optionsForField —
+ *      auto-detected fields are preselected (never "Non mappé"), optional
+ *      absent fields stay "— Non mappé —", raw/BOM headers are canonicalized,
+ *      manual choices are never overwritten, and the SAME appliedMapping
+ *      drives buildParsedItems() on confirm (40-row ALU CSV, idempotent).
  *
  * Run: npx tsx tests/catalogUploadModal.test.ts
  */
@@ -20,8 +30,16 @@ import {
   parseCsvContent,
   resolveMapping,
   buildParsedItems,
-  parseImportPrice
+  parseImportPrice,
+  applyParsedCatalog,
+  mapImportedUnit,
+  slugifyMaterialId,
+  MAPPING_FIELDS,
+  optionsForField,
+  canonicalHeaderKey,
+  buildAppliedMapping
 } from '../src/components/CatalogUploadModal';
+import type { ColumnMapping } from '../src/components/CatalogUploadModal';
 import type { MaterialRate } from '../src/types';
 
 const EMPTY_RATES: MaterialRate[] = [];
@@ -201,6 +219,246 @@ test('tab-separated CSV and quoted value containing a comma are kept intact', ()
   const { items, errors } = buildParsedItems(rows, mapping, HT19);
   strictEqual(errors.length, 0);
   strictEqual(items[0].newPriceTnd, 9.9);
+});
+
+// ═══════════════ handleApply core — applyParsedCatalog ═══════════════════════
+
+const BASE_RATES: MaterialRate[] = [
+  { id: 'plaque_ba13_standard', category: 'placo', nameFr: 'Plaque de plâtre BA13 Standard', nameAr: 'صفيحة جبس عادية', nameDerja: 'صفايح جبس', unit: 'unit', unitPriceTnd: 30, defaultPriceTnd: 30 },
+  { id: 'rail_r48', category: 'placo', nameFr: 'Rail R48 galvanisé', nameAr: 'ريل R48', nameDerja: 'ريل R48', unit: 'ml', unitPriceTnd: 7.8, defaultPriceTnd: 7.8 }
+];
+
+function itemsFromCsv(csv: string, rates: MaterialRate[]) {
+  const rows = parseCsvContent(csv);
+  const mapping = resolveMapping(Object.keys(rows[0]));
+  return buildParsedItems(rows, mapping, { taxMode: 'ht', tvaRate: 19, rates }).items;
+}
+
+test('apply: existing material gets updated (one-to-one), input array not mutated', () => {
+  const items = itemsFromCsv(`material_code,material_name,category,unit,price_ht
+PLA-BA13-STD,Plaque de plâtre BA13 Standard 1.2x2.5m,placo,unit,33.000`, BASE_RATES);
+  const snapshot = JSON.stringify(BASE_RATES);
+  const { updatedRates, updatedCount, addedCount } = applyParsedCatalog(BASE_RATES, items, { supplierName: 'Comptoir Test' });
+  strictEqual(updatedCount, 1);
+  strictEqual(addedCount, 0);
+  strictEqual(updatedRates.length, 2, 'nothing added, nothing removed');
+  strictEqual(updatedRates[0].id, 'plaque_ba13_standard');
+  strictEqual(updatedRates[0].unitPriceTnd, 33);
+  strictEqual(updatedRates[1].unitPriceTnd, 7.8, 'other existing rate untouched');
+  strictEqual(JSON.stringify(BASE_RATES), snapshot, 'input rates array not mutated');
+});
+
+test('apply: new material (ALU-001) is added with a complete valid MaterialRate shape', () => {
+  const items = itemsFromCsv(`material_code,material_name,category,unit,price_ht
+ALU-001,Profilé aluminium 3m,aluminium,ml,12.500`, EMPTY_RATES);
+  const { updatedRates, updatedCount, addedCount } = applyParsedCatalog(EMPTY_RATES, items, { supplierName: 'Quincaillerie X' });
+  strictEqual(updatedCount, 0);
+  strictEqual(addedCount, 1);
+  strictEqual(updatedRates.length, 1);
+  const r = updatedRates[0];
+  for (const key of ['id', 'category', 'nameFr', 'nameAr', 'nameDerja', 'unit', 'unitPriceTnd', 'defaultPriceTnd']) {
+    assertOk(key in r, `MaterialRate requires field "${key}"`);
+  }
+  strictEqual(r.id, 'alu_001');
+  strictEqual(r.category, 'aluminium');
+  strictEqual(r.nameFr, 'Profilé aluminium 3m');
+  strictEqual(r.nameAr, 'Profilé aluminium 3m', 'nameAr falls back to nameFr');
+  strictEqual(r.nameDerja, 'Profilé aluminium 3m', 'nameDerja falls back to nameFr');
+  strictEqual(r.unit, 'ml');
+  strictEqual(r.unitPriceTnd, 12.5);
+  strictEqual(r.defaultPriceTnd, 12.5, 'defaultPriceTnd = imported HT price');
+  assertOk(typeof r.note === 'string' && r.note.includes('Quincaillerie X'), 'note carries supplier/source');
+});
+
+test('apply: mixed file = existing updated + new added + old rates preserved', () => {
+  const items = itemsFromCsv(`material_code,material_name,category,unit,price_ht
+PLA-BA13-STD,Plaque de plâtre BA13 Standard 1.2x2.5m,placo,unit,33.000
+ALU-001,Profilé aluminium 3m,aluminium,ml,12.500
+ALU-002,Vis aluminium,aluminium,boite_1000,18.000`, BASE_RATES);
+  const { updatedRates, updatedCount, addedCount, duplicateSkipped } = applyParsedCatalog(BASE_RATES, items, { supplierName: 'S' });
+  strictEqual(updatedCount, 1);
+  strictEqual(addedCount, 2);
+  strictEqual(duplicateSkipped, 0);
+  strictEqual(updatedRates.length, 4, '2 existing + 2 new');
+  strictEqual(updatedRates[0].unitPriceTnd, 33);
+  strictEqual(updatedRates[1].id, 'rail_r48');
+  strictEqual(updatedRates[1].unitPriceTnd, 7.8, 'untouched existing rate');
+  strictEqual(updatedRates[2].id, 'alu_001');
+  strictEqual(updatedRates[3].id, 'alu_002');
+  strictEqual(updatedRates[3].unit, 'boite_1000', 'unit mapped into the allowed union');
+});
+
+test('apply: re-importing the same file does NOT create duplicates (idempotent)', () => {
+  const items = itemsFromCsv(`material_code,material_name,category,unit,price_ht
+ALU-001,Profilé aluminium 3m,aluminium,ml,12.500
+ALU-002,Vis aluminium,aluminium,boite_1000,18.000`, EMPTY_RATES);
+  const first = applyParsedCatalog(EMPTY_RATES, items, { supplierName: 'S' });
+  strictEqual(first.addedCount, 2);
+  const second = applyParsedCatalog(first.updatedRates, items, { supplierName: 'S' });
+  strictEqual(second.updatedRates.length, first.updatedRates.length, 'no growth on re-import');
+  strictEqual(second.addedCount, 0, 'everything matches by material_code → id');
+  strictEqual(second.updatedCount, 2);
+  strictEqual(second.updatedRates[0].unitPriceTnd, 12.5);
+});
+
+test('apply: duplicate rows inside one file are skipped without duplication', () => {
+  const items = itemsFromCsv(`material_code,material_name,category,unit,price_ht
+ALU-001,Profilé aluminium 3m,aluminium,ml,12.500
+ALU-001,Profilé aluminium 3m,aluminium,ml,13.000`, EMPTY_RATES);
+  const { updatedRates, addedCount, duplicateSkipped } = applyParsedCatalog(EMPTY_RATES, items, { supplierName: 'S' });
+  strictEqual(addedCount, 1, 'only one new rate created');
+  strictEqual(duplicateSkipped, 1);
+  strictEqual(updatedRates.length, 1);
+  strictEqual(updatedRates[0].unitPriceTnd, 12.5, 'first occurrence wins');
+});
+
+test('unit mapping stays inside the allowed MaterialRate union; ids are stable', () => {
+  strictEqual(mapImportedUnit('m2'), 'm²');
+  strictEqual(mapImportedUnit('M²'), 'm²');
+  strictEqual(mapImportedUnit('kg'), 'kg');
+  strictEqual(mapImportedUnit('ROULEAU'), 'rouleau');
+  strictEqual(mapImportedUnit('metre'), 'mètre');
+  strictEqual(mapImportedUnit('ml'), 'ml');
+  strictEqual(mapImportedUnit('boite de 1000'), 'boite_1000');
+  strictEqual(mapImportedUnit('unité inconnue xyz'), 'unit', 'unknown → safe default');
+  strictEqual(mapImportedUnit(''), 'unit');
+  strictEqual(slugifyMaterialId('ALU-001'), 'alu_001');
+  strictEqual(slugifyMaterialId('alu-001'), slugifyMaterialId('ALU-001'), 'stable across casings');
+  strictEqual(slugifyMaterialId('Profilé aluminium 3m'), 'profile_aluminium_3m');
+});
+
+// ── 16) Smart Mapping UI contract — ONE canonical value space everywhere ─────
+// Reproduces the exact value space used by the UI:
+//   appliedMapping[field.key] (state) === <select value> === option value
+//   === the exact header key used by the parsed row records.
+const ALU_HEADERS = ['material_code', 'material_name', 'category', 'trade', 'unit', 'price_ht', 'tva_rate', 'currency'];
+
+function buildAluTestCsv(): string {
+  const lines = [ALU_HEADERS.join(',')];
+  for (let i = 1; i <= 40; i++) {
+    const code = `ALU-${String(i).padStart(3, '0')}`;
+    lines.push(`${code},Profilé aluminium test ${code},aluminium,aluminium,ml,${(10 + i / 100).toFixed(3)},19,TND`);
+  }
+  return lines.join('\r\n');
+}
+
+test('smart mapping UI: canonical fields exist with the exact spec labels (Catégorie + Métier, no fake Métier (code))', () => {
+  strictEqual(
+    MAPPING_FIELDS.map((f) => f.key as string).join(','),
+    'material_code,material_name,category,trade,unit,price_ht,tva_rate,currency,source'
+  );
+  const labels = new Map(MAPPING_FIELDS.map((f) => [f.key as string, f.label]));
+  strictEqual(labels.get('material_code'), 'Référence matériau');
+  strictEqual(labels.get('material_name'), 'Désignation matériau');
+  strictEqual(labels.get('category'), 'Catégorie');
+  strictEqual(labels.get('trade'), 'Métier');
+  strictEqual(labels.get('unit'), 'Unité');
+  strictEqual(labels.get('price_ht'), 'Prix HT');
+  strictEqual(labels.get('tva_rate'), 'Taux TVA');
+  strictEqual(labels.get('currency'), 'Devise');
+  const requiredKeys = MAPPING_FIELDS.filter((f) => f.required).map((f) => f.key as string).sort().join(',');
+  strictEqual(requiredKeys, 'material_name,price_ht,unit', 'only the fields buildParsedItems requires are marked required');
+});
+
+test('smart mapping UI: option values are the exact row-record header keys (same space as appliedMapping)', () => {
+  const headers = ['Référence', 'Désignation', 'Prix_HT_TND'];
+  const opts = optionsForField(headers);
+  strictEqual(opts.length, 3);
+  for (const opt of opts) {
+    assertOk(headers.includes(opt.value), `option value "${opt.value}" is an exact header key`);
+    strictEqual(opt.label, opt.value);
+  }
+});
+
+test('smart mapping UI: aluminium CSV auto-selects every detected field — no "Non mappé" shown for them', () => {
+  const rows = parseCsvContent(buildAluTestCsv());
+  strictEqual(rows.length, 40);
+  const headers = Object.keys(rows[0]);
+  const auto = resolveMapping(headers);
+  const applied = buildAppliedMapping(headers, auto, {});
+  // material_code → Référence matériau, material_name → Désignation matériau,
+  // category → Catégorie, trade → Métier, unit → Unité, price_ht → Prix HT,
+  // tva_rate → Taux TVA, currency → Devise — all preselected in the Selects.
+  strictEqual(applied.material_code, 'material_code');
+  strictEqual(applied.material_name, 'material_name');
+  strictEqual(applied.category, 'category');
+  strictEqual(applied.trade, 'trade');
+  strictEqual(applied.unit, 'unit');
+  strictEqual(applied.price_ht, 'price_ht');
+  strictEqual(applied.tva_rate, 'tva_rate');
+  strictEqual(applied.currency, 'currency');
+  for (const key of ALU_HEADERS) {
+    assertOk((applied as Record<string, string | undefined>)[key] !== '', `detected field "${key}" is never shown as Non mappé`);
+  }
+});
+
+test('smart mapping UI: optional field absent from the CSV stays "— Non mappé —"', () => {
+  const rows = parseCsvContent(buildAluTestCsv()); // no "source" column
+  const headers = Object.keys(rows[0]);
+  const applied = buildAppliedMapping(headers, resolveMapping(headers), {});
+  strictEqual(applied.source, '', 'source is optional and absent → Non mappé');
+});
+
+test('smart mapping UI: raw/BOM-mismatched auto-detection value is canonicalized to the exact row key', () => {
+  const headers = ['material_code', 'material_name', 'unit', 'price_ht'];
+  strictEqual(canonicalHeaderKey('material_code', headers), 'material_code', 'exact match passes through');
+  strictEqual(canonicalHeaderKey('\uFEFFmaterial_code', headers), 'material_code', 'BOM stripped');
+  strictEqual(canonicalHeaderKey('  Material_Code  ', headers), 'material_code', 'case + spaces normalized');
+  strictEqual(canonicalHeaderKey('colonne inconnue', headers), '', 'unknown header → empty');
+  // Accent-only differences (plus case/spacing/BOM) resolve to the EXACT key
+  // present in the parsed rows — a French CSV keeps its accented headers as
+  // row-record keys, so the canonical form must map back onto that exact key:
+  const frHeaders = ['Référence', 'Désignation', 'Unité', 'Prix_HT'];
+  strictEqual(canonicalHeaderKey('reference', frHeaders), 'Référence', 'accents normalized → exact accented row key');
+  strictEqual(canonicalHeaderKey('\uFEFFDESIGNATION', frHeaders), 'Désignation', 'BOM + case on accented row key');
+  strictEqual(canonicalHeaderKey('prix  ht', frHeaders), 'Prix_HT', 'spacing normalized on accented row key');
+  // A genuinely different word ("Matériau" ≠ "material" once accents are
+  // stripped) is NOT canonicalized — no vocabulary/fuzzy guessing between
+  // distinct column names:
+  strictEqual(canonicalHeaderKey('Matériau code', headers), '', 'different word ≠ accent variant');
+  // And buildAppliedMapping applies the same conversion to auto-detection:
+  const applied = buildAppliedMapping(headers, { material_code: '\uFEFFmaterial_code' } as ColumnMapping, {});
+  strictEqual(applied.material_code, 'material_code');
+});
+
+test('smart mapping UI: manual choices survive — auto-detection never overwrites them', () => {
+  const rows = parseCsvContent(buildAluTestCsv());
+  const headers = Object.keys(rows[0]);
+  const auto = resolveMapping(headers);
+  strictEqual(auto.trade, 'trade', 'sanity: auto-detection maps trade');
+  const userMapping: ColumnMapping = { trade: '', category: 'trade' }; // unmap Métier + manual remap
+  const applied = buildAppliedMapping(headers, auto, userMapping);
+  strictEqual(applied.trade, '', 'explicitly unmapped field stays unmapped');
+  strictEqual(applied.category, 'trade', 'manual remap wins over auto-detection');
+  strictEqual(applied.material_code, 'material_code', 'untouched field keeps auto-detection');
+  // Idempotent: re-running the merge (as every re-render/re-parse does) is stable.
+  const again = buildAppliedMapping(headers, auto, userMapping);
+  strictEqual(again.trade, '');
+  strictEqual(again.category, 'trade');
+});
+
+test('smart mapping UI → confirm: the SAME appliedMapping drives buildParsedItems — 40 ALU lignes à importer, idempotent', () => {
+  const rows = parseCsvContent(buildAluTestCsv());
+  const headers = Object.keys(rows[0]);
+  const applied = buildAppliedMapping(headers, resolveMapping(headers), {});
+  const { items, errors } = buildParsedItems(rows, applied, { taxMode: 'ht', tvaRate: 19, rates: EMPTY_RATES });
+  strictEqual(errors.length, 0);
+  strictEqual(items.length, 40, '40 ligne(s) à importer');
+  strictEqual(items[0].materialCode, 'ALU-001');
+  strictEqual(items[39].materialCode, 'ALU-040');
+  strictEqual(items[0].tvaRate, 19);
+  strictEqual(items[0].currency, 'TND');
+  // Confirm (applyParsedCatalog) on the very same items: 40 new materials added.
+  const first = applyParsedCatalog(EMPTY_RATES, items, { supplierName: 'Konstrivo Test' });
+  strictEqual(first.addedCount, 40);
+  strictEqual(first.updatedCount, 0);
+  const ids = new Set(first.updatedRates.map((r) => r.id));
+  assertOk(ids.has('alu_001') && ids.has('alu_020') && ids.has('alu_040'), 'ALU-001…ALU-040 all added');
+  // Re-importing the same CSV does NOT create duplicates.
+  const second = applyParsedCatalog(first.updatedRates, items, { supplierName: 'Konstrivo Test' });
+  strictEqual(second.addedCount, 0, 'no duplicates on re-import');
+  strictEqual(second.updatedRates.length, first.updatedRates.length, 'catalog size unchanged');
+  strictEqual(second.updatedCount, 40);
 });
 
 console.log('\n═══════════════════════════════════════════');

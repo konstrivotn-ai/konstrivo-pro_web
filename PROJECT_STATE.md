@@ -156,6 +156,8 @@
 - **2026-09-09 (catalog import fix session):** `tests/catalogUploadModal.test.ts` executed via `npx tsx` → **9/9 PASS** (simple CSV, Master CSV with price not in last column, `;`-delimited, UTF-8 BOM, missing price column → explicit error, invalid-row reporting, French decimal parsing, supplier alias mapping, TSV + quoted commas).
 - **2026-09-09:** `npx tsc --noEmit` → exit 0; `npx vite build` → success.
 - **2026-09-09:** `npm test` (`tsx tests/run.ts`) aborts at startup **before any test executes**: `PostgreSQL integration tests require NODE_ENV=test` (`tests/setup.ts:43`) — pre-existing environmental requirement, unrelated to the frontend fix.
+- **2026-09-09 (new-materials fix session):** `catalogUploadModal.test.ts` → **15/15 PASS** (6 new `applyParsedCatalog` tests: update / add / mixed / idempotent re-import / within-file duplicates / unit + id safety). `npx tsx tests/phaseD.test.ts` → all PASS. `npx tsc --noEmit` → exit 0. `npx vite build` → exit 0.
+- **2026-09-10 (Smart Mapping UI fix session):** ⚠️ **Needs Verification (agent session).** The agent session terminal returned exit 1 with NO output for every command (including `echo` and `git --version`), so `npx tsc --noEmit`, `npx tsx tests/catalogUploadModal.test.ts` and `npm run build` could not be executed by the agent. External verification run reported: tsc PASS, build PASS, suite **20/21** — single FAIL was `canonicalHeaderKey('Matériau code', headers) → 'material_code'` ("accents normalized"): **wrong test expectation, not a canonicalization defect** — accent-stripping yields `materiau_code`, and "Matériau" ≠ "material" as words, so no generic accent/case/spacing canonicalizer can (or should) equate them. Test corrected (test-only, no production change): genuine accent-only variants now assert conversion to the EXACT accented row-record keys (`'reference' → 'Référence'`, `'\uFEFFDESIGNATION' → 'Désignation'`, `'prix  ht' → 'Prix_HT'`) plus a guard that distinct words are never fuzzy-matched (`'Matériau code' → ''`). Re-run of the three commands pending → expected 21/21 + PASS.
 
 ---
 
@@ -252,6 +254,19 @@
 ---
 
 ## Recent Changes
+### 2026-09-10 — Fix: Smart Mapping UI in CatalogUploadModal (frontend-only) — ⚠️ Needs Verification
+- **Root cause:** `CatalogUploadModal.tsx` had NO user-visible Smart Mapping step — `resolveMapping()` ran inside `processRows()` into a transient variable, the mapping was never stored in state, and `buildParsedItems()` consumed that invisible mapping. With no shared value space between the mapping state (`appliedMapping`), the Select `value` and the option values (`optionsForField`), any mapping UI mixed value spaces (canonical keys vs raw CSV headers) and displayed `— Non mappé —` even when detection/parsing were correct.
+- **Fix (frontend-only, same component):** one canonical value space — the EXACT header key used by the parsed row records — now shared by `appliedMapping` state, every `<select value>` and every `optionsForField()` option value:
+  - `MAPPING_FIELDS` — UI field registry: Référence matériau, Désignation matériau, Catégorie, Métier, Unité, Prix HT, Taux TVA, Devise, Source/Fournisseur. NO "Métier (code)" row: the local `trade` field accepts trade labels by design, so a `trade` column maps legitimately to « Métier » and nothing pretends to consume a trade code.
+  - `optionsForField(headers)` — option values = exact row-record header keys.
+  - `canonicalHeaderKey(raw, headers)` — converts auto-detection values (BOM-prefixed / differently cased / accented / spaced raw headers) to the exact row key; '' when unmatched.
+  - `buildAppliedMapping(headers, autoMapping, userMapping)` — auto-detection fills untouched fields; manual choices ALWAYS win and are never overwritten (`''` = explicit un-mapping); an override pointing at a column absent from the current file falls back to auto-detection; optional fields absent from the CSV stay '' (→ `— Non mappé —`).
+  - New state `parsedRows` / `parsedHeaders` / `appliedMapping` / `userMapping`; a visible Smart Mapping panel (one Select per field) renders above the preview; every mapping change re-runs `buildParsedItems()` live; `handleApply()` re-parses with the exact displayed `appliedMapping` before `applyParsedCatalog()`.
+  - Status message now reports `N ligne(s) à importer`; a missing price column no longer blocks the mapping UI — it prompts the user to map « Prix HT » manually.
+- `tests/catalogUploadModal.test.ts` — 6 regression tests added (15 → 21): canonical field labels/order, option-value space, 40-row ALU CSV auto-selection (no "Non mappé" for detected fields), optional absent field stays unmapped, raw/BOM header canonicalization, manual-choice precedence, and the same-`appliedMapping`-drives-`buildParsedItems()` confirm flow (40 ALU lignes à importer, ALU-001…ALU-040 added, re-import idempotent).
+- `ColumnMapping` is now exported (type-only import used by the test suite; additive, no contract change).
+- **Status:** ⚠️ **Needs Verification** — `npx tsc --noEmit`, `npx tsx tests/catalogUploadModal.test.ts`, `npx vite build` and the manual `konstrivo_aluminium_test.csv` check could NOT be executed in this session (terminal/tooling shell returned exit 1 with no output for every command, including `echo`/`git --version`). No API/server/DB/RatesTab/ServicesTab/calculator/CSV-parser changes were made.
+
 
 ### 2026-09-09 — Fix: Import Catalogue Fournisseur (Web Frontend Only)
 - **Scope:** Frontend-only repair of the supplier catalogue import modal. No DB, schema, API, model, or calculation-engine changes; no completed phase touched.
@@ -267,6 +282,17 @@
 - `package.json` / `package-lock.json` — Added dependency `xlsx@^0.18.5`.
 - `tests/catalogUploadModal.test.ts` — New frontend suite (9 tests; all passing — see Test Execution Status).
 - **Status:** Implemented & verified (tsc clean, 9/9 frontend tests, vite build OK). Full `npm test` suite remains blocked by the pre-existing `NODE_ENV=test` requirement (see Known Issues §3).
+
+### 2026-09-09 — Fix: Supplier Catalogue Import now ADDS new materials on Apply
+- **Root cause:** `handleApply()` in `CatalogUploadModal.tsx` only mapped over the existing `rates` array — imported materials recognized as "Nouvel article" (e.g. ALU-001…ALU-040) were silently dropped after Enregistrer. The old matching was also many-to-many (`nameFr.includes()`), which could overwrite several rates with one item's price.
+- **Fix (frontend-only, same component):** new exported pure helper `applyParsedCatalog(rates, items, opts)`:
+  - Result = existing rates + updated matches + newly added articles; existing rates never removed or replaced; input array not mutated.
+  - Matching order: (a) `material_code` ↔ existing id via slug normalization (`slugifyMaterialId`), (b) preview-matched rate id, (c) normalized name with category preference. One-to-one enforcement + signature dedup ⇒ re-importing the same file is idempotent (no duplicates).
+  - New articles get a complete `MaterialRate`: `id` = slug(material_code) (unique + deterministic; falls back to slug(name+category)), `category` = file category/trade (free string per Phase D), `unit` mapped safely into the allowed union via `mapImportedUnit` (unknown → `unit`, no blind casts), `unitPriceTnd` = `defaultPriceTnd` = imported HT price, `nameAr`/`nameDerja` fall back to `nameFr`, `note` carries supplier + import date (+ currency when ≠ TND).
+- `handleApply()` now delegates to `applyParsedCatalog` and reports updated / added / duplicate counts.
+- New materials appear immediately in Outils → Tarifs: RatesTab renders the whole `rates` array under the default "Tous" filter, and the `onApplyCatalog` → `handleBulkUpdateRates` → `setRates` flow is unchanged.
+- **ServicesTab status:** unchanged (no architecture change). `ServicesTab.tsx` does NOT consume `rates` at all — it renders a static in-component `servicesList` (8 marketing service cards). That is why imported materials never appear there; this is by design, not a regression.
+- Tests: `tests/catalogUploadModal.test.ts` extended 9 → **15 tests, all passing** (existing updated without mutation / new article added with full shape / mixed file / re-import idempotency / within-file duplicates / unit-union mapping + stable ids). `npx tsx tests/phaseD.test.ts` → all PASS (calculation engine untouched). `tsc --noEmit` exit 0; `vite build` exit 0.
 
 ---
 
@@ -300,6 +326,6 @@
 ---
 
 **Last Updated:** 2026-09-09
-**Audit Type:** Documentation Only (original audit) + frontend catalog-import fix documented same day (see Recent Changes)
-**Code Changes:** 2026-09-09 — `src/App.tsx`, `src/components/CatalogUploadModal.tsx`, `package.json` (+`xlsx` dep), `package-lock.json`, `tests/catalogUploadModal.test.ts` (new); `PROJECT_STATE.md` (this documentation)
+**Audit Type:** Documentation Only (original audit) + frontend catalog-import fixes documented same day (see Recent Changes)
+**Code Changes:** 2026-09-09 — `src/App.tsx`, `src/components/CatalogUploadModal.tsx` (import pipeline + apply/add-new-materials), `package.json` (+`xlsx` dep), `package-lock.json`, `tests/catalogUploadModal.test.ts` (new, 15 tests), `PROJECT_STATE.md` (documentation)
 

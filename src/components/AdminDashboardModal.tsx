@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { ArtisanDirectoryItem, MaterialRate, DevisDocument, Language, CountryCode, CurrencyCode, TradeCategory, UserProfile } from '../types';
 import { CURRENCY_SYMBOLS, COUNTRIES_CONFIG, formatPrice } from '../data/countryConfig';
-import { login, upsertCatalogItem, listPendingPriceUpdates, approvePendingPriceUpdate, importCatalogCsv } from '../lib/api';
+import { login, upsertCatalogItem, listPendingPriceUpdates, approvePendingPriceUpdate, previewCatalogImport, importCatalogFile } from '../lib/api';
 
 export interface ProFeatureItem {
   id: string;
@@ -143,8 +143,11 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
   // CSV File Input Ref
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Phase A — server-side transactional CSV import in flight (prevents re-entry)
-  const [csvImporting, setCsvImporting] = useState<boolean>(false);
+  // Phase C — Smart Mapping import state (upload → detect → map → preview → import)
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importPreview, setImportPreview] = useState<any | null>(null);
+  const [importMapping, setImportMapping] = useState<Record<string, string>>({});
+  const [importStep, setImportStep] = useState<'idle' | 'mapping' | 'importing'>('idle');
 
   // Price Editing Local State
   const [editableRates, setEditableRates] = useState<MaterialRate[]>(rates);
@@ -445,22 +448,75 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
     }
   };
 
-  // Phase A — CSV Catalogue Import Handler
-  // The browser only TRANSMITS the raw file. ALL parsing, validation and
-  // persistence happen server-side inside ONE database transaction
-  // (POST /api/v1/catalog/import-csv — all-or-nothing, per-row report).
-  // Unknown trades are REFUSED by the server (never coerced to 'placo';
-  // dynamic trades come later in Phase B).
-  const handleCsvImport = async (event: React.ChangeEvent<HTMLInputElement>) => {
+  // Phase C — Smart Mapping Catalog Import Handlers
+  // The browser only TRANSMITS the raw file (.csv or .xlsx). ALL parsing,
+  // column detection, smart mapping, validation and persistence happen
+  // server-side:
+  //   1. POST /api/v1/catalog/preview  → detected columns + suggested mapping
+  //      + sample normalized rows + validation report (NO database write).
+  //   2. The Admin reviews/adjusts the mapping (unmapped required fields
+  //      block the import) — every change re-previews for live validation.
+  //   3. POST /api/v1/catalog/import   → transactional commit through the
+  //      EXISTING Phase A mechanism (dynamic trades + ONE transaction).
+  const resetImportFlow = () => {
+    setImportFile(null);
+    setImportPreview(null);
+    setImportMapping({});
+    setImportStep('idle');
+  };
+
+  const requestImportPreview = async (file: File, mapping: Record<string, string>) => {
+    const payload: any = await previewCatalogImport(file, {
+      mapping,
+      countryCode: selectedCountry,
+      currencyCode: selectedCurrency,
+    });
+    setImportPreview(payload?.data || null);
+  };
+
+  const handleCatalogFileSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    if (event.target) event.target.value = '';
     if (!file) return;
-    if (csvImporting) {
-      if (event.target) event.target.value = '';
+    if (importStep !== 'idle') return;
+    const lower = file.name.toLowerCase();
+    if (!lower.endsWith('.csv') && !lower.endsWith('.xlsx')) {
+      setNotification('✗ Format non supporté. Utilisez un fichier .csv ou .xlsx.');
+      setTimeout(() => setNotification(null), 6000);
       return;
     }
-    setCsvImporting(true);
+    setImportStep('mapping');
+    setImportFile(file);
     try {
-      const payload: any = await importCatalogCsv(file, {
+      // No mapping yet — the server returns its suggestion first.
+      await requestImportPreview(file, {});
+    } catch (err: any) {
+      setNotification(`✗ Import annulé — fichier rejeté : ${err?.message || 'Erreur serveur.'}`);
+      setTimeout(() => setNotification(null), 8000);
+      resetImportFlow();
+    }
+  };
+
+  const handleMappingChange = async (fieldKey: string, sourceColumn: string) => {
+    if (!importFile) return;
+    const next = { ...importMapping };
+    if (sourceColumn) next[fieldKey] = sourceColumn;
+    else delete next[fieldKey];
+    setImportMapping(next);
+    try {
+      // Re-preview for live validation of the new mapping (no DB write).
+      await requestImportPreview(importFile, next);
+    } catch {
+      // keep the previous preview; the error surfaces on import attempt
+    }
+  };
+
+  const handleConfirmImport = async () => {
+    if (!importFile || !importPreview?.canImport || importStep === 'importing') return;
+    setImportStep('importing');
+    try {
+      const payload: any = await importCatalogFile(importFile, {
+        mapping: importMapping,
         countryCode: selectedCountry,
         currencyCode: selectedCurrency,
       });
@@ -471,6 +527,7 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
       );
       if (typeof onImportCompleted === 'function') onImportCompleted();
       setTimeout(() => setNotification(null), 6000);
+      resetImportFlow();
     } catch (err: any) {
       const failedRows: any[] = Array.isArray(err?.report?.failed) ? err.report.failed : [];
       const reasons = failedRows
@@ -481,9 +538,8 @@ export const AdminDashboardModal: React.FC<AdminDashboardModalProps> = ({
         `✗ Import annulé — aucune donnée écrite (import tout-ou-rien). ${reasons || err?.message || 'Erreur serveur.'}`
       );
       setTimeout(() => setNotification(null), 8000);
-    } finally {
-      setCsvImporting(false);
-      if (event.target) event.target.value = '';
+      // Stay on the mapping step so the Admin can fix the reported rows.
+      setImportStep('mapping');
     }
   };
   // (Phase A — the legacy browser-side CSV parsing and the N×upsertCatalogItem
@@ -1255,14 +1311,143 @@ camion_evacuation_gravats_6m3;Camion Évacuation Gravats 6m3;demolition;unit;160
             {activeAdminTab === 'prices' && (
               <div className="space-y-4">
                 
-                {/* Hidden File Input for CSV Catalogue Import */}
+                {/* Hidden File Input for CSV/XLSX Catalogue Import (Phase C Smart Mapping) */}
                 <input
                   type="file"
                   ref={fileInputRef}
-                  onChange={handleCsvImport}
-                  accept=".csv,.txt"
+                  onChange={handleCatalogFileSelected}
+                  accept=".csv,.txt,.xlsx"
                   className="hidden"
                 />
+
+                {/* Phase C — Smart Mapping panel: detect columns → map fields →
+                    preview → validate → import. Rendered between the upload
+                    button click and the transactional import. */}
+                {importStep !== 'idle' && importPreview && (
+                  <div className="bg-slate-950 p-4 rounded-2xl border border-emerald-500/30 space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <div>
+                        <h4 className="text-xs font-bold text-emerald-400 flex items-center gap-2">
+                          <FileSpreadsheet className="w-4 h-4" />
+                          <span>Import intelligent — correspondance des colonnes</span>
+                        </h4>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          {String(importPreview.fileName || '')} · {importPreview.fileType === 'xlsx' ? 'Excel (xlsx)' : 'CSV'}
+                          {importPreview.sheetName ? ` · feuille « ${importPreview.sheetName} »` : ''}
+                          {' '}· {importPreview.totalRows ?? 0} ligne(s) détectée(s)
+                          {' '}· marché {importPreview.countryCode || selectedCountry}/{importPreview.currencyCode || selectedCurrency}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={resetImportFlow}
+                        className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 text-[11px] font-bold border border-slate-800 rounded-lg transition-all cursor-pointer"
+                      >
+                        Annuler
+                      </button>
+                    </div>
+
+                    {(importPreview.unmappedRequired || []).length > 0 && (
+                      <div className="text-[11px] text-rose-300 bg-rose-950/40 border border-rose-500/30 rounded-xl px-3 py-2">
+                        ✗ Champs obligatoires non mappés : {(importPreview.unmappedRequired || []).join(', ')} — l'import est bloqué jusqu'à leur correspondance.
+                      </div>
+                    )}
+                    {(importPreview.mappingErrors || []).length > 0 && (
+                      <div className="text-[11px] text-rose-300 bg-rose-950/40 border border-rose-500/30 rounded-xl px-3 py-2">
+                        ✗ {(importPreview.mappingErrors || []).join(' | ')}
+                      </div>
+                    )}
+                    {(importPreview.rejected || []).length > 0 && (
+                      <div className="text-[11px] text-amber-300 bg-amber-950/30 border border-amber-500/30 rounded-xl px-3 py-2">
+                        ⚠ {importPreview.rejectedCount} ligne(s) rejetée(s) — aucune écriture tant que des lignes sont invalides :
+                        {(importPreview.rejected || []).slice(0, 5).map((f: any, i: number) => (
+                          <div key={i} className="mt-0.5">ligne {f.row}{f.reference ? ` (${f.reference})` : ''} : {f.reason}</div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Mapping selectors — generic, driven by the server field registry */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                      {(importPreview.fields || []).map((field: any) => {
+                        const current = importMapping[field.key] ?? importPreview.appliedMapping?.[field.key] ?? '';
+                        return (
+                          <div key={field.key} className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5">
+                            <span className={`text-[11px] font-bold w-40 shrink-0 ${field.required ? 'text-emerald-300' : 'text-slate-400'}`}>
+                              {field.label}{field.required ? ' *' : ''}
+                            </span>
+                            <select
+                              value={current}
+                              onChange={(e) => handleMappingChange(field.key, e.target.value)}
+                              disabled={importStep === 'importing'}
+                              className="flex-1 bg-slate-900 text-slate-100 text-[11px] font-mono border border-slate-700 rounded-lg px-1.5 py-1 outline-none cursor-pointer disabled:opacity-60"
+                            >
+                              <option value="">— Non mappé —</option>
+                              {(importPreview.detectedColumns || []).map((col: any) => (
+                                <option key={col.source} value={col.source}>
+                                  {col.source}{col.sample ? ` (ex: ${col.sample})` : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        );
+                      })}
+                      <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5">
+                        <span className="text-[11px] font-bold text-slate-400 w-40 shrink-0">Source</span>
+                        <span className="text-[11px] font-mono text-sky-300">OFFICIAL_DEFAULT (fixe)</span>
+                      </div>
+                    </div>
+
+                    {/* Sample normalized rows (first 5) */}
+                    <div className="overflow-x-auto border border-slate-800 rounded-xl">
+                      <table className="w-full text-left text-[10px]">
+                        <thead className="bg-slate-900 text-slate-400">
+                          <tr>
+                            <th className="px-2 py-1.5">Ligne</th>
+                            <th className="px-2 py-1.5">material_code</th>
+                            <th className="px-2 py-1.5">material_name</th>
+                            <th className="px-2 py-1.5">trade_code</th>
+                            <th className="px-2 py-1.5">unit</th>
+                            <th className="px-2 py-1.5">price_ht</th>
+                            <th className="px-2 py-1.5">currency / market</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800">
+                          {(importPreview.sampleRows || []).map((r: any) => (
+                            <tr key={r.row} className="text-slate-200">
+                              <td className="px-2 py-1 font-mono">{r.row}</td>
+                              <td className="px-2 py-1 font-mono">{r.material_code}</td>
+                              <td className="px-2 py-1">{r.material_name}</td>
+                              <td className="px-2 py-1 font-mono">{r.trade_code}</td>
+                              <td className="px-2 py-1 font-mono">{r.unit}</td>
+                              <td className="px-2 py-1 font-mono">{r.price_ht}</td>
+                              <td className="px-2 py-1 font-mono">{r.currency}/{r.market}</td>
+                            </tr>
+                          ))}
+                          {(!importPreview.sampleRows || importPreview.sampleRows.length === 0) && (
+                            <tr><td className="px-2 py-2 text-slate-500" colSpan={7}>Aucune ligne valide à prévisualiser.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[11px] text-slate-400">
+                        {importPreview.validCount} ligne(s) à importer · {importPreview.rejectedCount} rejetée(s) ·
+                        {' '}aucune écriture avant confirmation (import tout-ou-rien).
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleConfirmImport}
+                        disabled={!importPreview.canImport || importStep === 'importing'}
+                        title="Import transactionnel côté serveur : tout-ou-rien, aucune écriture partielle"
+                        className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black rounded-xl shadow-lg shadow-emerald-500/20 transition-all cursor-pointer flex items-center gap-1.5 border border-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>{importStep === 'importing' ? 'Import en cours…' : `Confirmer l'import (${importPreview.validCount} lignes)`}</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex flex-col lg:flex-row gap-3 justify-between items-start lg:items-center bg-slate-950 p-4 rounded-2xl border border-slate-800">
                   <div>
@@ -1325,16 +1510,16 @@ camion_evacuation_gravats_6m3;Camion Évacuation Gravats 6m3;demolition;unit;160
                       <span>Modèle CSV</span>
                     </button>
 
-                    {/* Bulk CSV Import Button — Phase A: server-side transactional import (CSV only) */}
+                    {/* Bulk Import Button — Phase C: upload → smart mapping → preview → transactional import (CSV + XLSX) */}
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
-                      disabled={csvImporting}
-                      title="Import transactionnel côté serveur : tout-ou-rien, aucune écriture partielle"
+                      disabled={importStep !== 'idle'}
+                      title="Import transactionnel côté serveur : tout-ou-rien, aucune écriture partielle. CSV et Excel (.xlsx) acceptés."
                       className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black rounded-xl shadow-lg shadow-emerald-500/20 transition-all cursor-pointer flex items-center gap-1.5 border border-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       <Upload className="w-4 h-4" />
-                      <span>{csvImporting ? 'Import en cours…' : 'Importer Catalogue (CSV)'}</span>
+                      <span>{importStep !== 'idle' ? 'Import en cours…' : 'Importer Catalogue (CSV / Excel)'}</span>
                     </button>
 
                     {/* Manual Add Material Form Toggle */}
