@@ -12,8 +12,14 @@ import path from 'path';
 
 const DATA_DIR = path.resolve(process.cwd(), 'server', 'data');
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+try {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+} catch (e) {
+  // Read-only filesystem (e.g. Vercel /var/task): skip data-dir creation.
+  // In-memory mode keeps working; JSON persistence simply stays unavailable.
+  console.warn('[KONSTRIVO] Could not create data dir (read-only FS?):', (e as Error & { code?: string }).code || e);
 }
 
 export class MemoryStore {

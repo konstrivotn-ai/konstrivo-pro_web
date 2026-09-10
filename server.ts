@@ -1,7 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { setupV1Router } from "./server/routes/v1";
 import { bootstrapAdmin } from "./server/bootstrap";
 import { authenticate } from './server/middleware/auth';
@@ -122,8 +121,12 @@ export async function createApp() {
   // Gemini AI Construction Estimator Assistant (secured) — single source of truth
   app.post('/api/ai-estimator', authenticate, createLimiter('aiEstimator'), createAiEstimatorHandler());
 
-  // Vite middleware in Development
+  // Vite middleware in Development.
+  // Dynamic import: the Vercel serverless function (NODE_ENV=production) must
+  // never load vite — it is ESM-only and crashes CJS function init there
+  // (FUNCTION_INVOCATION_FAILED). Local dev (Node >= 22.12/24) still works.
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
